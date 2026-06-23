@@ -1,0 +1,14 @@
+---
+globs: ["src/**/*.py"]
+---
+
+# Validation gates
+
+Every analysis script must:
+
+- Print first/last date of every pulled series before transforms.
+- Save raw pulled data to outputs/raw/ as Parquet (cheap re-runs).
+- Save final figure-data to outputs/processed/ alongside the PNG.
+- If replicating a paper, include a correlation check vs the reported
+  series (target ≥0.95) and print it. Flag if below 0.90.
+- Use pathlib for all paths. No hardcoded absolute paths.

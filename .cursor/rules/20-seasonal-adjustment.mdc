@@ -1,0 +1,37 @@
+---
+description: Seasonal adjustment defaults and method selection
+---
+
+# SA conventions
+
+Default: X-13ARIMA-SEATS via the wrapper in
+@C:/Users/asingh/new_work/econ-templates/sa/x13_seasonal_adjust.py
+
+**Always call `setup_x13()` once at script start before any SA call.**
+The Census Bureau ships X-13 as `x13ashtml.exe` (the HTML-output variant,
+now default since ~2024). statsmodels' `_find_x12()` only recognizes
+`x13as.exe` / `x12a.exe` and otherwise silently falls back to classical
+decomposition — a silent-wrong-answer failure. `setup_x13()` resolves the
+install path, copies `x13ashtml.exe` → `x13as.exe` on first run, and
+verifies discoverability. Without it, SA may run but produce inferior
+methodology without erroring.
+
+```python
+from x13_seasonal_adjust import setup_x13, seasonal_adjust
+
+setup_x13()  # ONCE per script, before any SA calls
+
+sa = seasonal_adjust(my_series, freq="M", trading=False, log=False)
+```
+
+The wrapper handles the binary-name mismatch via `setup_x13()`, the
+.err.html bug (statsmodels#8392), TMP/TEMP env management, two-pass
+trading-day fallback, and classical decomposition fallback. Do not
+reimplement these — call `setup_x13()` then `seasonal_adjust()`.
+
+Apply SA to LEVELS, never to growth rates. Compute differences after.
+
+Log SA diagnostics (which attempt succeeded, fallback triggers) so I can
+audit which series went through which path. After a batch SA, also log
+per-series whether `setup_x13()` succeeded — a failed setup means every
+subsequent SA call silently fell back to classical.

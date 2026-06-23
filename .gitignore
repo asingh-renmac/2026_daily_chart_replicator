@@ -1,0 +1,11 @@
+outputs/raw/
+outputs/processed/
+outputs/figures/*.png
+outputs/figures/*.pdf
+outputs/email/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.venv/
+*.log
+.env

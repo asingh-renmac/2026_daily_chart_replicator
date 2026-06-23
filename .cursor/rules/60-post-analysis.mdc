@@ -1,0 +1,252 @@
+---
+description: Post-analysis workflow — email, newsletter commentary, and send
+---
+
+# Post-analysis workflow
+
+The analysis is "done" when:
+
+- All planned outputs are in outputs/figures/ and outputs/processed/
+- The validation gates in 40-validate.mdc pass
+- The user has reviewed the figures and is happy
+
+After that, when the user types one of:
+
+- "wrap up" → email draft bundle only (draft + subject + attachments list)
+- "wrap up + newsletter" → email bundle + newsletter commentary
+  (commentary auto-attaches to the email)
+- "wrap up + send" → email bundle + commentary + auto-send
+- "send drafted" → SEND ONLY the files already on disk; regenerate nothing
+
+…run the post-analysis protocol below.
+
+## Audience register (applies to email body + newsletter)
+
+Both the email body and the newsletter are written for a **non-technical
+reader** — someone who may have little quantitative background and won't
+follow heavy jargon. Simplify the language: explain plainly, gloss or avoid
+technical terms.
+
+**Simplify the language, not the facts.** Even in the accessible prose,
+always preserve:
+
+- the **workhorse model / technique by name** (with a one-clause plain gloss),
+- the **sample range**, and
+- the **major assumption(s)** the result hinges on.
+
+These three are mandatory in both deliverables.
+
+The split that lets the prose stay light:
+
+- The **EMAIL** carries a full-rigor **Model details** section near the end
+  (after caveats, before "What's attached") — equations, restrictions,
+  priors, inputs/outputs, estimation + testing ranges, validation. That
+  section is where jargon is welcome.
+- The **NEWSLETTER** does NOT get a Model details section — it stays terse
+  (<250 words), so the model/sample/assumption facts are folded into a
+  sentence or two of plain prose.
+
+Cited literature **actually used** in the project is **hyperlinked and kept
+very short** (author + year) in both the email and the newsletter. Link only
+to a verifiable canonical URL/DOI; never fabricate one (see "Verify any
+source-paper citation").
+
+## Required pre-step: READ THE OUTPUT FILES
+
+Before drafting anything, actually read the output files. Use:
+
+- pd.read_parquet / pd.read_csv on every file in outputs/processed/
+- PIL.Image or just file existence checks for outputs/figures/
+
+Extract the actual numbers. NEVER use placeholders like "[XX%]" or
+"approximately X.X". The whole point of writing after the analysis is
+to use the real numbers.
+
+If outputs/ is empty or the analysis hasn't run, STOP and tell the user.
+
+## Verify any source-paper citation
+
+If the commentary or email cites a source paper (authors, title, year),
+verify it against the local source materials in notes/ — never generate a
+citation from memory. Read notes/<source>.pdf (or the relevant slice) and
+match the author list, title, and year EXACTLY. Cross-check any chart
+titles/footers the commentary ships, not just the prose. A hallucinated
+author list is invisible to anyone who hasn't read the paper and immediately
+obvious to anyone who has — the kind of error that quietly erodes trust with
+the most informed readers.
+
+**Hyperlinks get the same discipline.** The link target must be the paper's
+real canonical URL/DOI — take it from the source PDF in notes/ or a
+verifiable official source (DOI, NBER, SSRN, a Fed/BIS/IMF page). NEVER
+fabricate or guess a URL. If you can't verify the link, ship the short cite
+WITHOUT a hyperlink rather than risk a dead or wrong link.
+
+## Email draft
+
+This step produces the COMPLETE send-ready bundle — all three files —
+so that any "wrap up" variant leaves outputs/email/ ready for "send
+drafted" with no missing-file gaps. Do NOT defer subject/attachments
+creation to the send step.
+
+Use the template at:
+@C:/Users/asingh/new_work/econ-templates/prompts/post_analysis_email.md
+
+Write all three of these to outputs/email/:
+
+1. email_draft.md ← the email body, written for a non-technical reader per
+   "Audience register". Body order: headline → study design (accessible,
+   with the named model + sample + key assumption + short hyperlinked cite)
+   → key insights → caveats (optional) → **Model details (full rigor)** →
+   "What's attached". Wrap key numbers and the Model-details labels in
+   <b>...</b> (HTML bold) so they survive the markdown → HTML conversion in
+   the send step. Use simple HTML; no fancy CSS.
+
+2. email_subject.txt ← the subject line, one line. If a newsletter is
+   generated this run, you may reuse its suggested title; otherwise
+   write a subject from the headline finding.
+
+3. email_attachments.txt ← one file path per line (relative to project
+   root or absolute), listing every file to attach. Populate from the
+   analysis outputs per "Attachments" / "Charts in email vs backup"
+   below. If a newsletter is generated this run, commentary.md is
+   appended here by the Newsletter-commentary step.
+
+All three must exist and be non-empty at the end of every wrap-up
+variant. The "What's attached" section in email_draft.md must match
+the actual contents of email_attachments.txt — keep them in sync.
+
+### Model details section (inside email_draft.md)
+
+After the caveats and BEFORE "What's attached", add a **Model details**
+section in FULL technical rigor — the body deliberately stayed accessible;
+this section is where the depth goes. Use a compact labeled block (labels in
+<b>...</b>): model/technique + estimator + priors, source(s) (hyperlinked),
+inputs, outputs, estimation/sample range, testing/validation range, key
+assumptions/identifying restrictions, validation. Pull every line from
+plan.md (§1, §5, §7) and the output files — never invent a spec detail. The
+prompt template spells out the exact labels.
+
+### "What's attached" section (inside email_draft.md)
+
+After Model details, add a short "What's attached" section that tells the
+reader how to READ each file — not a second findings section. You must
+actually open the files first:
+  - Figures: read the image; describe axes/units, what each line is, and
+    how to read the legend. Call out multi-line or multi-panel plots
+    explicitly.
+  - CSV/parquet: read the headers; say what columns each contains.
+  - Commentary (if generated): one line saying what it is — the
+    Neil-style Economic Daily writeup — NOT a restatement of the numbers.
+One or two sentences per file, plain prose, <b>bold</b> key labels.
+Descriptive only — if it restates the headline numbers, trim it.
+Every file named here must appear in email_attachments.txt, and vice
+versa.
+
+## Attachments
+
+- outputs/figures/fig1_X.png ← inline in email body
+- outputs/processed/table1.csv ← attached, backup
+- outputs/email/commentary.md ← attached, backup (only if newsletter
+  was generated this run; see "Newsletter commentary")
+
+## Charts in email vs backup
+
+- Inline: fig1, fig2 (Jan 2010 – present)
+- Backup: fig3 (full sample), fig4 (sensitivity)
+- Commentary: backup attachment, never inline (it's prose, not a figure)
+
+## Newsletter commentary
+
+Only if requested. Use the template at:
+@C:/Users/asingh/new_work/econ-templates/prompts/post_analysis_commentary.md
+
+Write to:
+outputs/email/commentary.md
+
+The commentary follows Neil Dutta's Economic Daily style: terse, paragraph
+form, no bullets, leading with the finding. Written for a non-technical
+reader per "Audience register" — plain language, but the named
+model/technique, the sample range, and any decisive assumption must survive
+in a sentence or two of prose (the newsletter has no Model details section).
+Cited literature actually used is hyperlinked and kept very short. Suggest
+ONE title at the end (≤10 words, sentence case, no colon).
+
+After writing commentary.md, wire it into the email so it ships as an
+attachment on the SAME email (not a second send):
+  1. Append outputs/email/commentary.md to outputs/email/email_attachments.txt
+     (one path per line; don't duplicate if already present).
+  2. Add its one-line entry to the email's "What's attached" section
+     (what it is, not a number restatement — see "Email draft").
+Because the Email-draft step already created email_attachments.txt, this
+is an append, not a create. After this step, email_draft.md and
+email_attachments.txt must still be consistent.
+
+## Send already-drafted (no regeneration)
+
+Trigger: "send drafted".
+
+For when the user has already generated and HAND-EDITED the email files
+and wants to send exactly those, untouched.
+
+Do NOT run "Required pre-step", "Email draft", or "Newsletter commentary".
+Do NOT re-read outputs/processed to re-derive numbers.
+Do NOT overwrite email_draft.md, email_subject.txt, or email_attachments.txt.
+
+1. Verify all three exist and are non-empty:
+   outputs/email/{email_draft.md, email_subject.txt, email_attachments.txt}
+   If any is missing, STOP — tell the user to run "wrap up" first.
+2. Echo the subject, the body's first two lines, and the attachment list
+   back for a final visual check. If commentary.md exists on disk but is
+   NOT in the attachment list, flag it before sending — the user may have
+   meant to include it.
+3. Run the send command from "Auto-send" on those exact files.
+4. Confirm receipt. On failure, surface the error; do NOT retry.
+
+## Auto-send
+
+Only if the user typed "wrap up + send".
+
+By this point the Email-draft step (and Newsletter-commentary step, if
+run) have already written email_subject.txt and email_attachments.txt.
+Auto-send only CONSUMES them — it does not create or modify them. If any
+of the three files is missing, STOP and re-run the Email-draft step;
+do not silently regenerate from the send step.
+
+Run (using the shared venv python explicitly):
+  /c/Users/asingh/envs/shared-3.10/Scripts/python \
+      /c/Users/asingh/new_work/econ-templates/scripts/send_via_graph.py \
+      --subject-file outputs/email/email_subject.txt \
+      --body-file outputs/email/email_draft.md \
+      --attachments outputs/email/email_attachments.txt \
+      --to-env-var ECON_DAILY_RECIPIENTS
+
+The script reads recipient list from $ECON_DAILY_RECIPIENTS (comma-separated).
+Credentials come from AS_MSGRAPH_TENANT_ID / CLIENT_ID / CLIENT_SECRET.
+The body is always email_draft.md; commentary rides as an attachment,
+never as the body.
+
+After running, confirm with the user that they received it. If the send
+fails, do NOT retry — surface the error so the user can debug creds.
+
+## What NOT to do
+
+- Don't draft email/commentary before the analysis finishes.
+- Don't invent numbers or hand-wave with "approximately" when the
+  parquet/CSV is right there on disk.
+- Don't strip the named model/technique, the sample range, or the key
+  assumptions when simplifying — simplify the language, keep the facts.
+  Both deliverables must retain all three.
+- Don't write the email body paragraphs at full technical rigor — that's
+  the Model details section's job; the body stays accessible. The newsletter
+  has NO Model details section.
+- Don't fabricate a citation URL — hyperlink only verifiable canonical
+  sources; otherwise ship the short cite without a link.
+- Don't cite literature that wasn't actually used in the project.
+- Don't defer email_subject.txt / email_attachments.txt creation to the
+  send step — the Email-draft step writes all three bundle files so every
+  wrap-up variant is send-ready.
+- Don't auto-send unless explicitly requested ("+ send").
+- Don't email files outside outputs/ — only attach what was produced
+  by this analysis, never raw data or upstream files.
+- Don't send the commentary as a second standalone email — it rides as
+  an attachment on the analysis email (per "Newsletter commentary").

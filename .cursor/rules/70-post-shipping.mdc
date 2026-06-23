@@ -1,0 +1,55 @@
+---
+alwaysApply: true
+---
+
+# Post-shipping workflow
+
+After a project's deliverables ship, three prompts harvest what the project
+produced: concepts/intuition → my knowledge repo, reusable code → my cookbook,
+and systemic lessons → econ-templates itself. This rule wires the triggers.
+
+## Precondition gate (check before running any of these)
+
+Post-shipping runs only when the project is genuinely DONE:
+- The planned outputs are in `outputs/figures/` and `outputs/processed/`.
+- The `40-validate.mdc` gates pass.
+- I've reviewed the figures and I'm happy.
+- If this project distributes (email/commentary), the `60-post-analysis.mdc`
+  send already happened — post-shipping is *after* the deliverable went out.
+
+If any of these isn't true, STOP and tell me — don't harvest an unfinished
+project.
+
+## Triggers
+
+| I type | You run |
+|---|---|
+| **"post-ship"** (or "wrap project") | all three prompts, in order, one at a time |
+| **"distill"** (or "harvest concepts") | `@C:/Users/asingh/new_work/econ-templates/prompts/knowledge_distillation.md` only |
+| **"capture patterns"** (or "harvest code") | `@C:/Users/asingh/new_work/econ-templates/prompts/code_patterns_capture.md` only |
+| **"port lessons"** (or "harvest lessons") | `@C:/Users/asingh/new_work/econ-templates/prompts/lessons_to_templates.md` only |
+
+## "post-ship" sequence
+
+Run the three **one by one**, in this order, and do not start the next until
+the current one is fully done (through all its own STOP gates and my approvals):
+
+1. **knowledge_distillation.md** — concepts/intuition → `knowledge_repo`.
+   Independent of the others; first because it's pure harvest.
+2. **code_patterns_capture.md** — reusable code → `knowledge_repo/code-cookbook`.
+   Must run before step 3: it produces the `template_worthy` hand-off list that
+   step 3 consumes.
+3. **lessons_to_templates.md** — systemic lessons → `econ-templates` files
+   (with human-approval discipline; pre-commit review before any push).
+
+Before each step, announce which prompt is starting and read its full text via
+the `@`-path above. Honor every STOP gate inside each prompt — "post-ship" is a
+convenience wrapper, not a license to skip approvals. If I only want one part,
+I'll use the single-prompt trigger instead.
+
+## What this rule does NOT do
+
+- It doesn't override any STOP gate or approval inside the three prompts.
+- It doesn't auto-push: `knowledge_repo` commits and any `econ-templates` edits
+  are staged and surfaced for my review first.
+- It doesn't run on an unfinished project — see the precondition gate.

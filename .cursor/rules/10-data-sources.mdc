@@ -1,0 +1,131 @@
+---
+description: How to pull macro data — use these reference scripts (vendor clients, scrapers, derived-series helpers)
+---
+
+# Data source conventions
+
+The shared venv has Haver, xbbg, win32com (Macrobond), fredapi already.
+Use them directly. Follow the patterns in these reference scripts:
+
+Haver: @C:/Users/asingh/new_work/econ-templates/data/haver_pull.py
+Bloomberg: @C:/Users/asingh/new_work/econ-templates/data/bbg_xbbg.py
+Macrobond: @C:/Users/asingh/new_work/econ-templates/data/macrobond_pull.py
+FRED: @C:/Users/asingh/new_work/econ-templates/data/fred_pull.py
+
+## Scrapers and derived-series helpers (non-vendor sources)
+
+These live alongside the vendor clients in data/ but cover sources that
+aren't a straight vendor pull — a web scrape, a hybrid academic+scrape
+series, or a derived chaining. Each is a REFERENCE: copy it into a
+project's scripts/ and adapt the default paths, or import it if
+econ-templates is on the path. Every gotcha below is already encoded in
+the module's docstring — READ THE DOCSTRING before adapting one.
+
+Mortgage rates (Mortgage News Daily):
+@C:/Users/asingh/new_work/econ-templates/data/mnd_pull.py
+- The market-rate proxy when you need a daily 30Y fixed without a vendor
+  entitlement. RenMac uses the "30 Yr. Fixed" series; resample("QS").mean()
+  for a quarterly average. Other exposed series: 15 Yr. Fixed, 30 Yr. FHA,
+  30 Yr. Jumbo, 7/6 SOFR.
+- Fail-loud scraper: a network error, a layout change, an unparseable
+  payload, OR stale data all raise MNDScrapeError — it never writes a
+  bad/old file. assert_fresh() is the staleness backstop; wire it into any
+  unattended refresh.
+- Load-bearing gotchas (all encoded): pass the User-Agent (MND 403s bare
+  GETs); balanced-brace JSON extractor, NOT a regex (chartData is nested);
+  don't filter on 'DataChange' (silently drops points); tz-strip the date
+  field (MND now serves ISO '…Z' strings → a tz-aware index breaks
+  assert_fresh); atomic .tmp→replace write.
+- On an unattended run, CONFIRM the live series label is exactly
+  "30 Yr. Fixed" — a vendor-side rename hard-fails the pull by design.
+
+Consumer Sentiment (UMich Surveys of Consumers):
+@C:/Users/asingh/new_work/econ-templates/data/umich_sca_scraper.py
+- FINALS: FRED UMCSENT or Haver CSENT@USECON (1978→present). Use these
+  directly — finals don't need the scraper.
+- PRELIMS: there is NO native preliminary ticker (not in Haver, FRED, or
+  ALFRED — vintages are end-of-month finals only). Don't hunt for one. Use
+  the hybrid path: Kole et al. (2025) dataset for 1991-01→2021-09, UMich
+  PDF scrape for 2021-10→present.
+- Gotchas: the archive is the data subdomain
+  (data.sca.isr.umich.edu/reports.php), NOT the homepage; polite scraping
+  (3s sleep, identifiable UA, resumable progress log); two-pass PDF
+  extraction (pdfplumber tables → narrative regex fallback) with an ICS
+  sanity range [40,130]; the Kole 'All' sheet ≡ FRED UMCSENT, use it as a
+  load-time cross-check; Kole citation REQUIRED in any published output
+  (CC BY-NC 4.0). Implementation is lifted from the C-CSI project's
+  scrapers at wrap-up — this file is the index to it.
+
+Long-history Real PCE (chained 2017$):
+@C:/Users/asingh/new_work/econ-templates/data/real_pce_helper.py
+- One call for Real PCE in chained 2017 dollars back to 1959. PCEC96 alone
+  starts only 2007; this backward-chains DPCERA3M086SBEA (the quantity
+  index, 1959→present) to PCEC96 via a single anchor (2007-01).
+- If your transform is scale-invariant (log YoY, log diffs), you DON'T need
+  this — the quantity index carries identical information. Reach for it only
+  when you need levels/ratios in dollars pre-2007.
+- Self-validates: backward-chained vs original PCEC96 correlation must be
+  > 0.99999 over the overlap; a drop flags a possible BEA re-basing →
+  re-anchor and validate manually. Never use it on a nominal series (PCE) —
+  that's already current dollars, no chaining needed.
+
+These three reference FRED/Haver IDs (UMCSENT, CSENT@USECON, PCEC96,
+DPCERA3M086SBEA) are documented in the scripts above. If any should join
+the trusted "Confirmed mnemonics" list below, that's a human-approval step
+— don't auto-promote them.
+
+## Confirmed mnemonics (recorded so we don't re-browse DLX)
+
+- Published NY/Dallas Fed WEI: FWEIW@WEEKLY
+- Chicago Fed CARTS weekly retail trade: CARTSWRT@SURVEYS (SA, Bil.$);
+  retail prices deflator: CARTSWRP@SURVEYS. Data starts 2018; ~single-week
+  interior NaNs (the 4-weeks-per-month artifact) need filling.
+- DTS daily withheld taxes: tdw@DAILY (current format; pre-2019 = tdw2..5,
+  stitch). MTS withheld income: ftgriw@GOVFIN; employment: ftgrse@GOVFIN.
+- Real GDP (quarterly, for WEI scaling): GDPH@USNA — NOT @USECON.
+- NSA UI claims weekly: LICN@WEEKLY (initial), LIUN@WEEKLY (continuing).
+
+## Discovering Haver mnemonics
+
+To find or confirm a Haver series code, use the haver-metadata MCP
+(search_series → get_series) instead of guessing or re-browsing DLX.
+Confirm code@database + frequency + span via get_series before using
+it. When you confirm a new mnemonic, SURFACE it for human approval
+before it's added to the Confirmed mnemonics list above — don't write
+it in automatically; that list is trusted and reused without
+re-checking, so every line must be human-vetted. If the MCP isn't in
+this workspace, ASK — never guess.
+
+- Narrow search_series with the databases, frequency, geography, and
+  sa_status filters when you know them — fewer, sharper candidates.
+- Discontinued series are returned and LABELED (is_discontinued), not
+  hidden; prefer a live series unless a discontinued one is explicitly
+  wanted.
+- Metadata only: the MCP finds and CONFIRMS series — it does NOT pull
+  observations. After confirming the code@database ticker, fetch the
+  data via the normal Haver path (the @haver_pull.py pattern above).
+
+## Weekly index alignment (reusable pattern)
+
+For any weekly multi-series index:
+1. ONE canonical W-SAT grid (Sun–Sat reference weeks) spanning the sample.
+2. Map each series to it with ONE documented fill rule (no ffill/bfill mix).
+   W-FRI-dated series (fuel, electricity) → shift to the enclosing Saturday.
+3. OUTER join, then an EXPLICIT logged NaN policy — never let a join
+   silently drop weeks. Print per-series: first/last date, weeks present,
+   NaNs filled, dropped.
+4. 52-week diff = true 52 CONTIGUOUS-week lag on the grid, not .shift(52)
+   on a ragged index. Verify grid contiguity over each window.
+
+Mandatory patterns from the references:
+
+- Save raw pulls to outputs/raw/ as Parquet IMMEDIATELY after fetching.
+  Re-runs during development must hit the parquet, not re-pull.
+- Scrapers (mnd_pull and friends) write a CANONICAL file to data/raw/ with a
+  deterministic name (idempotent across runs) AND a per-run snapshot to
+  outputs/raw/ as Parquet. NEVER put a timestamp in the canonical filename —
+  that breaks re-runs; use a dated archive/ copy if you want history.
+- Print first/last date + row count for every series after pulling.
+- Tickers required by this project are in @prompt.md under "Data".
+- If a Haver mnemonic, Bloomberg field, or Macrobond series ID is
+  ambiguous, ASK — never guess.

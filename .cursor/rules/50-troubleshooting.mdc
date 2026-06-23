@@ -1,0 +1,58 @@
+---
+description: How to resolve errors and unknown library behavior
+---
+
+# Troubleshooting protocol
+
+When you hit an error, library issue, or unfamiliar behavior:
+
+## Tier 1 — Check templates FIRST
+
+Look in the relevant template file's "GOTCHAS THIS FILE ENCODES" docstring:
+Haver: @C:/Users/asingh/new_work/econ-templates/data/haver_pull.py
+Bloomberg: @C:/Users/asingh/new_work/econ-templates/data/bbg_xbbg.py
+Macrobond: @C:/Users/asingh/new_work/econ-templates/data/macrobond_pull.py
+FRED: @C:/Users/asingh/new_work/econ-templates/data/fred_pull.py
+X-13 SA: @C:/Users/asingh/new_work/econ-templates/sa/x13_seasonal_adjust.py
+Charts: @C:/Users/asingh/new_work/econ-templates/charts/renmac_chart_style.py
+Email (MS Graph): @C:/Users/asingh/new_work/econ-templates/scripts/send_via_graph.py
+
+If the issue is documented there, apply the documented fix. Do NOT
+re-derive it from scratch and do NOT web_search if it's already in the
+templates.
+
+## Tier 2 — Web search official sources
+
+If the issue is NOT in the templates, web_search and web_fetch:
+
+- The library's official GitHub repo (issues, README, docs)
+- statsmodels GitHub issues for statsmodels errors
+- The xbbg, blpapi, fredapi GitHub repos for those tools
+- Macrobond's developer documentation
+- Stack Overflow only if the above don't have it
+
+Prefer official sources over blog posts. For Python libraries, the
+GitHub Issues tab almost always has the answer for non-trivial errors.
+
+## Tier 3 — Update templates after resolving
+
+After you fix a new bug, BEFORE moving on:
+
+1. Print: "NEW GOTCHA — propose adding to <template_file>:"
+2. Show the user (a) the error symptom, (b) the root cause, (c) the
+   working fix, in the same format as existing gotchas in that file.
+3. Wait for the user to say "add it" before editing the template.
+4. If approved, append the gotcha to the docstring header AND fix
+   the code beneath if needed.
+
+Templates are the cumulative memory. Every new gotcha that lives only
+in a project script is lost to future projects.
+
+## What NOT to do
+
+- Don't `pip install --upgrade` to "try fixing" a library issue. The
+  shared venv versions are pinned for a reason. Surface the bug instead.
+- Don't paper over an error with try/except that returns NaN silently.
+  If a data pull fails, raise — the user needs to know.
+- Don't web_search for things in the templates. That wastes a search
+  call and signals you didn't read the template gotchas.

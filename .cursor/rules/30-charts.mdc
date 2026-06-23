@@ -1,0 +1,16 @@
+---
+globs: ["src/**/plot*.py", "src/**/chart*.py", "src/**/figure*.py"]
+---
+
+# Chart styling
+
+Follow the RenMac house style in
+@C:/Users/asingh/new_work/econ-templates/charts/renmac_chart_style.py
+
+Mandatory:
+
+- Use the color constants (C_PRIMARY, C_SECONDARY, C_BLACK, C_NAVY).
+- Apply renmac_style(ax, title, subtitle) on every chart.
+- Title ≤11 words, sentence case, no colon.
+- Save to outputs/figures/ as PNG at dpi=200, bbox_inches="tight".
+- Save the underlying data alongside the PNG as Parquet + CSV.

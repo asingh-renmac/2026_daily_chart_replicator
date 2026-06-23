@@ -1,0 +1,90 @@
+---
+alwaysApply: true
+---
+
+# Shell environment — Windows + Git Bash + shared venv
+
+## What this rule guarantees
+
+The shared Python venv at C:\Users\asingh\envs\shared-3.10 must be
+active for any Python invocation. Cursor on Windows defaults to
+PowerShell for the agent's Shell tool, which does NOT inherit the
+venv or config/.env unless explicitly configured.
+
+## Required Cursor settings (verify at project start)
+
+Your user settings.json must contain BOTH:
+
+    "terminal.integrated.defaultProfile.windows": "Git Bash",
+    "terminal.integrated.automationProfile.windows": {
+        "path": "C:\\Program Files\\Git\\bin\\bash.exe",
+        "args": ["-l", "-i"]
+    }
+
+The defaultProfile controls the interactive terminal panel. The
+automationProfile controls what the agent Shell tool spawns. They
+are SEPARATE settings — setting only defaultProfile leaves the
+agent running PowerShell. This is the most common Windows
+misconfiguration that breaks all subsequent agent work.
+
+The `-l -i` args matter: -l (login shell) sources .bash_profile,
+which sources .bashrc; -i (interactive) also triggers .bashrc.
+Without these, the venv won't auto-activate and config/.env won't
+load.
+
+## Environment verification at session start
+
+Before running any data pull or analysis, verify the shell with:
+
+    echo "shell=$0" && which python && \
+      python -c "import os; print('FRED_KEY_OK=', \
+      bool(os.environ.get('FRED_API_KEY')))" && \
+      python -c "import os; print('MSGRAPH_OK=', \
+      bool(os.environ.get('AS_MSGRAPH_CLIENT_SECRET')))"
+
+Expected output:
+shell=/usr/bin/bash
+/c/Users/asingh/envs/shared-3.10/Scripts/python
+FRED_KEY_OK= True
+MSGRAPH_OK= True
+
+If shell shows anything PowerShell-related, STOP and tell Aman to
+update Cursor's automationProfile setting. Do NOT try to fix shell
+config from inside the agent loop. The fix is: 1. Edit user settings.json (Ctrl+, → JSON view) 2. Add the automationProfile block above 3. Developer: Reload Window 4. Re-verify
+
+If python doesn't resolve to /c/Users/asingh/envs/shared-3.10/Scripts/python,
+the .bashrc venv auto-activation isn't running.
+
+If FRED_KEY_OK or MSGRAPH_OK is False, config/.env isn't being
+sourced from .bashrc. Both are user-level configuration issues.
+
+## Path conventions in Git Bash
+
+Git Bash translates /c/Users/... to C:\Users\... when passing as
+COMMAND ARGUMENTS, but NOT when paths appear inside string literals
+sent to `python -c`. Inside Python -c strings, use Windows-style
+paths with forward slashes:
+
+    # WRONG — Python sees the literal /c/Users/... which isn't valid
+    python -c "import sys; sys.path.insert(0, '/c/Users/asingh/foo')"
+
+    # RIGHT — Windows path with forward slashes (Python accepts both)
+    python -c "import sys; sys.path.insert(0, 'C:/Users/asingh/foo')"
+
+    # ALSO RIGHT — use cygpath to convert at command time
+    python -c "import sys; sys.path.insert(0, r'$(cygpath -m /c/Users/asingh/foo)')"
+
+The cleanest pattern: cd into the relevant directory and use
+relative paths in -c strings.
+
+## Anti-patterns
+
+- DO NOT translate bash commands to PowerShell syntax to work around
+  a PowerShell-only shell. The fix is to switch the shell.
+- DO NOT pip install --upgrade to "fix" import issues. Verify which
+  Python is running first.
+- DO NOT assume the agent's automation shell inherits the
+  interactive terminal's environment. They're separate.
+- DO NOT silently re-run things in PowerShell because Get-ChildItem
+  errors look like bash errors. The first sign that && or other
+  bash tokens fail = PowerShell, fix the profile.

@@ -1,0 +1,56 @@
+---
+description: Working with CPS microdata via the bd CPS extract (weights, universes, flows, SA). Attach when a project reads CPS person-month data, computes LFPR/EPOP/U-rate, or does labor-market microdata cuts.
+globs:
+alwaysApply: false
+---
+
+# CPS microdata (bd CPS extract)
+
+When this project involves CPS microdata, **read the reference first** and follow it:
+`C:\Users\asingh\new_work\econ-templates\cps\CPS_REFERENCE.md`
+(full constructed-variable dictionary: `...\cps\codebook.txt`; loader: `...\cps\cps_loader.py`).
+Copy `cps_loader.py` into the project's `src/` or import it; don't re-roll the glob/metrics.
+
+## Non-negotiables (silent-wrong-number rules)
+
+- **Sum weights, never count rows.** Default weight is `BASICWGT` for any population/stock
+  (LFPR, EPOP, U-rate, counts, shares). Weights are already in person units — **never
+  divide by 10000**.
+- **ORG variables** (wages `WKEARN`/`HRWAGE`, `UNION`/`UNIONMEM`, detailed hours) are valid
+  only for `MIS in (4, 8)` and must use **`PWORWGT`**. Filter to ORG *before* weighting.
+- **U-rate denominator is the labor force**, not population.
+- **Mask negatives** (`-1/-4/-9` = NIU/missing) in continuous vars before averaging.
+- **Check every variable's universe** in `codebook.txt` before cutting on it. Specifically:
+  `SCHENR`/`SCHOOL` cover ages 16–24 through 2012 and 16–54 from 2013 — start
+  enrollment-based series for ages >24 at **2013**.
+- **Categoricals are strings.** `LFS` ∈ {`Employed`,`Unemployed`,`NILF`}; `EDUC` ∈
+  {`ADV`,`COLL`,`SC`,`HS`,`LTHS`}; `SCHOOL` ∈ {`Full-time College`,`Part-time College`,
+  `High School`,`Not Enrolled`}. Compare to the literal strings.
+
+## If a needed variable isn't in the extract
+
+The yearly files only keep what the build notebook kept. For a raw CPS field that's missing
+(classic case: `PRPTREA`, the slack-vs-can't-find-FT reason split — it's read but dropped),
+the plan must state up front whether you will (a) remove it from `DropVars` in
+`bd_CPS_details.py` and regenerate, or (b) one-off merge it from raw on `QSTNUM`+`OCCURNUM`
+(or `CPSID`+`LINENO`). Don't discover this mid-implementation. Guard against the **May 2024
+layout hole** (`PTHR`/`PTWK`/`PTOT` absent that month) when touching those vars.
+
+## Longitudinal / flows
+
+Person key = `CPSID` + `LINENO`. Validate every match on `FEMALE`, `WBHAO`, and an `AGE`
+delta of ~0–2. Don't match across the 1994–1995 seam. Gross flows = weighted `LFS_t × LFS_{t+1}`
+cross-tab using `BASICWGT_t`.
+
+## Deliverables
+
+CPS series are **NSA**. Produce NSA first, seasonally adjust via
+`..\sa\x13_seasonal_adjust.py` (X-13), and save **both NSA and SA** to CSV. Indexed series
+rebase to **Jan 2020 = 100**. Before trusting any cut, sanity-check a national aggregate for
+one month against the BLS published level (e.g. employed ≈ CE16OV within sampling error).
+
+## Workflow
+
+Same as the global rule: read the prompt + this rule + `CPS_REFERENCE.md`, write the numbered
+PLAN in `plan.md` (data years, exact columns to read, weight choice per metric, universe
+checks, regenerate-variable steps, SA, validation), **STOP for approval**, then implement.
