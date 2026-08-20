@@ -271,9 +271,10 @@ ledger.
 genuinely standalone — it needed only `haver` and `fastmcp`, so it zips cleanly. This is
 a thin wrapper over a much larger machine, and the machine does not travel with it.
 
-Two of the four G9e steps are now done: the paths are relocatable (step 1) and the
-credential policy is decided (step 2). What remains is how the knowledge stores travel
-(step 3) and the package itself (step 4).
+Three of the four G9e steps are now settled: the paths are relocatable (step 1, built),
+the credential policy is decided (step 2), and the knowledge stores get their own
+subscribe-able repo (step 3, decided — not yet created). What remains to build is the
+package itself (step 4).
 
 ## What the lane actually reaches outside this repo
 
@@ -323,10 +324,40 @@ consequence rather than a bare pass/fail.
 - **`ANTHROPIC_API_KEY`** — not needed. The chat lane replaced `propose.py`, so there is
   no Opus call server-side.
 
-### Step 3 — how the knowledge stores travel — **OPEN**
+### Step 3 — how the knowledge stores travel — **DECIDED 2026-08-20: a remote, but not `knowledge_repo`'s**
 
-`knowledge_repo` is a git repo **with no remote**; it exists only on Aman's machine. The
-four files total about 47 KB, so the mechanics are trivial and the question is purely
+The decision is that teammates **subscribe** rather than receive a one-off copy, so they
+stay current as the daily lane learns. Two facts found while recording it change *which*
+repo gets the remote:
+
+1. **`clarified-knowledge/` is untracked.** `git status` in `knowledge_repo` reports it
+   as `?? clarified-knowledge/` — the four store files have never been committed there.
+   Giving `knowledge_repo` a remote would therefore ship none of them.
+2. **`knowledge_repo` is mostly not these files.** It also holds `econometrics/` (~64 KB
+   of personal concept notes), `economics/`, `_templates/`, `_anki/` and
+   `code-cookbook/`, and it carries 19 uncommitted files. Publishing all of that to
+   share four JSON files is a much wider disclosure than the decision intends.
+
+**So: give the STORES their own small private repo**, and point `CLARIFIED_KNOWLEDGE_DIR`
+at it. This needs no code — that variable already exists and `src/resolve.py` has always
+read it. Steps:
+
+```bash
+# 1. new PRIVATE repo under the work org, e.g. asingh-renmac/renmac-chart-knowledge
+# 2. seed it from the live stores
+cd C:/Users/asingh/new_work/knowledge_repo/clarified-knowledge
+git init && git add . && git commit -m "seed: ratified legend, learned, trusted, native-MA stores"
+git remote add origin git@github-work:asingh-renmac/renmac-chart-knowledge.git
+git push -u origin main
+# 3. point the daily lane at the same checkout (or leave the default path in place)
+#    setx CLARIFIED_KNOWLEDGE_DIR "C:/Users/asingh/new_work/renmac-chart-knowledge"
+```
+
+A teammate then clones that one repo, sets `CLARIFIED_KNOWLEDGE_DIR` to it, and runs
+`git pull` whenever they want the daily lane's newer binds. **Not done — it publishes
+firm ticker mappings, so the org and visibility are your call.**
+
+The four files total about 47 KB, so the mechanics are trivial; the question is
 governance.
 
 **How a read-only store still helps a teammate.** The stores are written by the *daily*
@@ -350,10 +381,8 @@ go **stale**, never **wrong**. Two copies can never disagree about the same desc
 That makes even a plain file copy safe; the only cost of staleness is a park where a
 bind was possible, which the operator resolves by picking a candidate.
 
-Options: ship a point-in-time copy with the setup (simple, goes stale); give
-`knowledge_repo` a remote and have teammates pull (stays fresh, needs a repo decision);
-or omit the stores entirely (teammates get no learned recall and must label every
-series). **This is the one G9e question still open.**
+This is also why the subscribe model is worth the extra repo: a copy inherits a
+snapshot, a pull stays subscribed, and neither can ever conflict.
 
 ### Step 4 — package — **OPEN, blocked only on step 3**
 
