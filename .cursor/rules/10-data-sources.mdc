@@ -84,6 +84,16 @@ the trusted "Confirmed mnemonics" list below, that's a human-approval step
   stitch). MTS withheld income: ftgriw@GOVFIN; employment: ftgrse@GOVFIN.
 - Real GDP (quarterly, for WEI scaling): GDPH@USNA — NOT @USECON.
 - NSA UI claims weekly: LICN@WEEKLY (initial), LIUN@WEEKLY (continuing).
+- PPI capital-equipment for the capital-goods/shipments chart (sample1_chart3
+  navy line): **pa413121@USECON** = "PPI: Final Dem Pvt Capital Equipment for
+  Manufacturing Industries (SA, 1982=100)" (NAICS 413121), get_series-confirmed.
+  Resolved **by definition** from the RenMac desired-output legend, NOT from the
+  email screenshot text. **CAUTION (production consequence):** the screenshot
+  descriptor "PPI: Manufacturing Industries" is a *different concept* and matches
+  four metadata-identical `sp{1310,2410,2610,3210}@PPI` candidates that do NOT
+  disambiguate — a live email carrying that descriptor will (correctly) fail to
+  resolve and **park to Teams**; it will NOT auto-reach pa413121. The `sp`-codes
+  are deliberately kept OUT of this trusted list.
 
 ## Discovering Haver mnemonics
 

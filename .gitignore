@@ -1,8 +1,15 @@
-outputs/raw/
-outputs/processed/
-outputs/figures/*.png
-outputs/figures/*.pdf
-outputs/email/
+# Everything under outputs/ is a run artifact: renders, sweep dumps, ledger CSV/
+# JSONL, Teams stub transcripts. Results, not source — plan.md records the findings.
+outputs/
+# Backfill/dated ingestion: real email screenshots + per-day ledger (sensitive).
+data/
+# Bloomberg-chat source: pasted commentary + raw-Haver charts in dated docx folders.
+inbox_bloomberg/
+# Test fixtures: real Haver chart screenshots + internal commentary from email and
+# Bloomberg chats. Kept out of git history; --selftest needs them present locally.
+notes/
+.verify.png
+.g4_inspect/
 __pycache__/
 *.pyc
 .ipynb_checkpoints/
