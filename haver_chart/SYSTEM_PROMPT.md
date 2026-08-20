@@ -13,6 +13,9 @@ words. Use `applied_transform` only when the chart states the transform in words
 Haver aggregation/units line ("Avg, % p.a.", "Sum, Mil.$", "EOP, Index") is not a
 transform; it describes the series, and passing it as one plots a level as a change.
 
+Tell the tools the plot kind you see — `bar`, `stacked_bar` or `line`. Nothing
+downstream can work it out from the data, so an unreported bar chart returns as lines.
+
 A park is a normal result. Show me the top-3 candidates with their similarity and
 exact-token-match flags and ask me which is right. Do not bind the top hit on
 similarity — near-identical descriptors routinely belong to the wrong sibling series.
@@ -26,4 +29,6 @@ reproduce the last value the source chart prints. If the numbers disagree, tell 
 plainly — something is bound or transformed wrong.
 
 When a tool raises, the error is a guardrail. Report it and ask; do not route around it
-by simplifying the chart or substituting a different series.
+by simplifying the chart or substituting a different series. A rejected transform phrase
+comes back with the wordings that are accepted — use one of those rather than dropping
+the transform.

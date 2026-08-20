@@ -1244,24 +1244,55 @@ auto label; reproduce the source chart's printed last value before calling it do
 Hard stops: no `save_*` to the knowledge stores; no changes to the `run_daily` chain; no
 new transform vocabulary except through `_flat_transform`'s fail-loud path.
 
-### 13.12 Open questions
+### 13.12 Open questions — ANSWERED (Aman, 2026-08-20)
 
-1. Should the chat lane read the **daily lane's** renders/ledger at all (e.g. "redo
-   yesterday's chart 3 with a different title"), or stay stateless? Stateless is simpler
-   and cannot corrupt the ledger.
-2. When Claude reads a transform the vocabulary rejects, the tool raises. Should the error
-   carry the recognized phrase list so the operator can restate it, or stay terse?
-3. Does the chat lane need `plot_kind` inference at all, or is "tell me if it's bars"
-   good enough when the operator is present?
+1. **Daily-lane state: NO — the chat lane stays stateless.** It does not read the daily
+   renders or ledger, so "redo yesterday's chart 3 with a different title" is not
+   available; paste the chart again. A lane that cannot reach the ledger cannot corrupt
+   it, and that is worth more than the shortcut.
+2. **Transform errors: carry the recognized wordings.** BUILT — `lane.TRANSFORM_PHRASES`
+   + `lane.explain`, appended to the raise. The vocabulary floor is unchanged; what is
+   added is the wording the operator should use instead, which the shared message cannot
+   know. The shared raise ends in developer instructions ("extend
+   `build_chart._flat_transform`") that mean nothing in a chat.
+3. **`plot_kind`: the read reports it, and a bad value now raises.** BUILT —
+   `lane._plot_kind`. It calls `build_chart._plot_kind_of` rather than re-implementing
+   it, so "columns"/"stacked bars" normalize exactly as they do in the daily lane, but
+   an unrecognized value ("area", "histogram") raises here instead of silently drawing a
+   line. The daily lane keeps its lenient fallback, which is correct there: the shape is
+   cosmetic and `--replot` fixes it. In the chat the render IS the answer, so a dropped
+   bar chart must not pass unnoticed. Both tool docstrings, `SKILL.md` and
+   `SYSTEM_PROMPT.md` now instruct the read to report the shape.
+
+**Source line: DECIDED — keep the RenMac house line, no per-chart knob.** RenMac
+publishes the reconstruction, so `Source: Renaissance Macro Research, Haver Analytics`
+is the correct line; the Haver original's "Sources: FRB, FRBPHI/Haver" describes the
+source chart. `RenderSpec.source` already exists with that default (`render.py:271`) and
+`render_row` simply never passes one, so this stays a one-line change if a client ever
+asks for the primary agency. The §13.4 row schema is unchanged.
 
 ### 13.13 What was built (G9b, 2026-08-20)
 
 **Files.** `haver_chart/server.py` (the FastMCP stdio surface — two tools, the
 load-bearing rules in their docstrings), `lane.py` (the translation layer; no chart
-maths), `bootstrap.py` (sys.path, stdout discipline, store seal), `selftest.py` (19
+maths), `bootstrap.py` (sys.path, stdout discipline, store seal), `selftest.py` (28
 pre-flight checks), `SETUP.md`, `SKILL.md`, `SYSTEM_PROMPT.md`,
 `claude_desktop_config.example.json`. Harnesses: `scripts/g9b_lane_equivalence.py`,
 `scripts/g9b_philly.py`.
+
+**Post-signoff additions (§13.12 answers 2 and 3, both wrapper-local, no shared module
+touched).** `lane.TRANSFORM_PHRASES` + `lane.explain` turn the vocabulary rejection into
+an actionable one: the accepted wordings are appended and the shared message's developer
+instruction is stripped, since neither the phrase list nor the audience is something the
+shared raise can know. The list is hand-kept because the mapper is branch logic over
+keyword stems rather than a table, so `selftest.py` asserts every advertised wording
+still maps — that assertion, not discipline, is what stops the two drifting apart.
+`lane._plot_kind` calls `build_chart._plot_kind_of` for normalization (so "columns" and
+"stacked bars" resolve exactly as in the daily lane) and raises on a value that
+normalizer would discard. The daily lane keeps its lenient line fallback, which is right
+there — the shape is cosmetic and `--replot` corrects it — but in the chat the render IS
+the answer, so a silently dropped bar chart has nothing to catch it. Verified live:
+`plot_kind="columns"` reaches the renderer as a drawn `bar`. Selftest 19/19 → **28/28**.
 
 **Two things the design did not anticipate, both wrapper-local:**
 
@@ -1288,8 +1319,9 @@ selftests are green in the same commit.
 uses the RenMac house source line (`Source: Renaissance Macro Research, Haver
 Analytics`) like every daily-lane chart. The Haver original's "Sources: FRB,
 FRBPHI/Haver" is the source chart's own line, not the replication's. Adding a
-per-chart source knob would extend the approved §13.4 row schema, so it is left as an
-open question rather than taken unilaterally.
+per-chart source knob would extend the approved §13.4 row schema, so it was left as an
+open question rather than taken unilaterally — **Aman decided 2026-08-20 to keep the
+house line** (§13.12), so the schema stands as approved.
 
 **Evidence.** Lane equivalence 6/6 over `ledger_backfill_2026-08-11` — 4 pixel-identical
 to the archived PNGs; `_1`/`_2` differed only by data vintage (WTI and the 2Y yield have

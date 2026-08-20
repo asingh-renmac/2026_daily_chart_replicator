@@ -110,12 +110,46 @@ try:
 except Exception as exc:
     check("flurgle" in str(exc).lower() or "transform" in str(exc).lower(),
           "an unmapped transform raises", f"{type(exc).__name__}")
+    # The raise names what it REJECTED; the operator also needs what is accepted, and
+    # not the shared message's instruction to go edit the mapper.
+    told = lane.explain(exc)
+    check("Z-Score" in told, "the rejection tells the operator the accepted wordings")
+    check("extend build_chart" not in told,
+          "the developer hint is stripped from the operator's message")
 try:
     lane.render([{"applied_transform": "Z-Score", "proposed_legend": "x"}],
                 filename="_never")
     check(False, "a slot with no ticker raises", "it rendered instead")
 except ValueError as exc:
     check("resolve_series" in str(exc), "a slot with no ticker raises")
+
+print("\n7. Operator-facing contract")
+# The advertised wordings are a hand-kept list (the mapper is branch logic, not a
+# table), so assert each one still maps. Without this the list rots silently and the
+# error message starts recommending phrases the renderer rejects.
+unmapped = []
+for phrase in lane.TRANSFORM_PHRASES:
+    try:
+        lane.BC.phrase_to_haver(phrase, "X")
+    except Exception as exc:
+        unmapped.append(f"{phrase!r} -> {type(exc).__name__}")
+check(not unmapped, "every advertised transform wording still maps",
+      "; ".join(unmapped) if unmapped else f"{len(lane.TRANSFORM_PHRASES)} wordings")
+
+for raw, want in (("bar", "bar"), ("columns", "bar"), ("stacked bars", "stacked_bar"),
+                  ("line", "line"), ("", "line")):
+    try:
+        got = lane._plot_kind(raw, "check")
+        check(got == want, f"plot_kind {raw!r} normalizes to {want!r}", f"got {got!r}")
+    except Exception as exc:
+        check(False, f"plot_kind {raw!r} normalizes to {want!r}",
+              f"{type(exc).__name__}: {exc}")
+try:
+    lane._plot_kind("area", "check")
+    check(False, "an unrecognized plot_kind raises", "it returned a line instead")
+except ValueError as exc:
+    check("area" in str(exc) and "stacked_bar" in str(exc),
+          "an unrecognized plot_kind raises")
 
 n_bad = sum(1 for ok, _, _ in _RESULTS if not ok)
 print("\n" + "=" * 78)

@@ -31,7 +31,7 @@ cd C:/Users/asingh/new_work/2026_daily_chart_replicator
 C:/Users/asingh/envs/shared-3.10/Scripts/python.exe haver_chart/selftest.py
 ```
 
-Expected: `19/19 checks passed`. It checks the import boundary (§13.5), that the
+Expected: `28/28 checks passed`. It checks the import boundary (§13.5), that the
 learning stores are sealed read-only (§13.6), that a live resolve binds
 `bocgx@surveys`, that a render lands in `outputs/chat/`, and that the fail-loud
 guardrails still raise.

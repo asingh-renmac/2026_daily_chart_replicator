@@ -31,6 +31,8 @@ from haver_chart import lane                      # noqa: E402
 # mask_error_details stays FALSE. The pipeline's raises ARE the product here — an
 # operator who sees "unmappable applied_transform 'Avg, % p.a.'" can restate the
 # transform, whereas a masked "tool failed" turns a precise guardrail into a dead end.
+# `lane.explain` carries that one step further: on an unmapped transform it appends the
+# wordings that ARE recognized, since the raise names only what it rejected.
 mcp = FastMCP("haver-chart")
 
 
@@ -65,6 +67,10 @@ def resolve_series(
         percent change on 2026-08-11.
       * `sa_hint` — "sa" or "nsa" when the chart says so; this is a HARD cross-check.
       * `lag` — a Haver bracket tag: "[-4]" lags 4 observations, "[+4]" leads 4.
+      * `plot_kind` — read the SHAPE off the chart: "bar" for a bar or column chart,
+        "stacked_bar" for a stacked contribution chart, "line" otherwise. It rides
+        through in the returned `slot`, so set it here and `render_chart` draws it.
+        Anything else raises rather than quietly drawing a line.
 
     A PARK IS A NORMAL RESULT, NOT AN ERROR. If `status` is "parked", show the operator
     the `candidates` (top 3, with `similarity` and `exact_token_match`) and ASK which is
@@ -84,7 +90,7 @@ def resolve_series(
             formula=formula, sa_hint=sa_hint, freq_hint=freq_hint, axis=axis,
             lag=lag, plot_kind=plot_kind)
     except Exception as exc:
-        raise ToolError(f"{type(exc).__name__}: {exc}")
+        raise ToolError(lane.explain(exc))
 
 
 @mcp.tool
@@ -123,8 +129,14 @@ def render_chart(
     TRANSFORMS. The transform label is non-suppressible: it is appended to the subtitle
     so a transformed chart always says what was done to it. If your subtitle already
     states the transform, set `st_force=True` to use it verbatim and avoid the
-    duplicate. An unmapped transform phrase RAISES — restate it in Haver's own wording
-    rather than working around it.
+    duplicate. An unmapped transform phrase RAISES, and the error lists the wordings
+    that are recognized — restate it in one of those rather than working around it.
+
+    PLOT TYPE. Look at the source chart before you call this: `plot_kind="bar"` for a
+    bar or column chart, `"stacked_bar"` for a stacked contribution chart, `"line"`
+    otherwise. Set it per series. Before 2026-07-30 the pipeline could not represent
+    this at all and silently redrew every bar chart as lines, so it is worth a glance.
+    An unrecognized value raises here rather than falling back to a line.
 
     AXES. `axis_mode="dual"` puts series with `axis="R"` on the right and tags every
     legend LHS/RHS. Leave the min/max arguments empty unless you are matching a source
@@ -151,7 +163,7 @@ def render_chart(
             x_label_fmt=x_label_fmt, end_series=end_series,
             x_pad_periods=x_pad_periods)
     except Exception as exc:
-        raise ToolError(f"{type(exc).__name__}: {exc}")
+        raise ToolError(lane.explain(exc))
     # ToolResult, not a plain return: the operator needs to SEE the chart (image
     # content) while Claude needs the path and the plotted labels (structured
     # content). Returning a bare list makes FastMCP infer an output schema and then

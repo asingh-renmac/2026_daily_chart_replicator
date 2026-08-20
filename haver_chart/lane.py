@@ -15,6 +15,7 @@ lane) without an MCP client in the loop.
 
 from __future__ import annotations
 
+import re
 from datetime import date
 from pathlib import Path
 from typing import Any, Optional
@@ -30,6 +31,75 @@ with quiet_stdout():                      # importing Haver prints to stdout
 seal_stores(R)                            # §13.6 — reads allowed, writes raise
 
 OUT_ROOT = REPO_ROOT / "outputs" / "chat"
+
+# One accepted phrasing per family `build_chart._flat_transform` recognizes. The mapper
+# is branch logic over keyword stems rather than a table, so this list cannot be derived
+# from it — `selftest.py` asserts every entry still maps, which is what stops the two
+# from drifting apart. Used only to make the fail-loud error actionable: the raise names
+# the phrase it rejected, and an operator who cannot see the accepted wording has to
+# guess at it.
+TRANSFORM_PHRASES = (
+    "% Change - Year to Year",
+    "% Change",
+    "3-month %Change-ann",
+    "Difference - Year to Year",
+    "3-month moving average",
+    "3-month moving sum",
+    "Z-Score",
+    "Log",
+    "% Change - Year to Year of 3-month moving average",
+)
+
+PLOT_KINDS = ("line", "bar", "stacked_bar")
+_LINE_WORDS = ("line", "lines", "curve", "curves")
+
+
+def transform_help() -> str:
+    """The accepted `applied_transform` wordings, for an operator to restate one."""
+    return ("recognized wordings include " + "; ".join(f"{p!r}" for p in TRANSFORM_PHRASES)
+            + ". Haver's aggregation/units line ('Avg, % p.a.', 'Sum, Mil.$') is NOT a "
+              "transform — leave applied_transform empty for those. Year-to-date and "
+              "index/rebase are recognized but unsupported: pass the chart's formula "
+              "instead.")
+
+
+# The shared raise ends by telling a DEVELOPER to extend the mapper, which is the right
+# audience for the daily lane and the wrong one here. Swapped for the wordings the
+# operator can actually act on. Deliberately not a change to the raise itself: the
+# vocabulary floor is the guardrail. If that message is ever reworded this stops matching
+# and the hint simply reappears — a cosmetic regression, never a silent one.
+_DEV_HINT = re.compile(r"\s*[—–-]\s*extend build_chart[^)]*\)")
+
+
+def explain(exc: BaseException) -> str:
+    """Type-prefixed message, with the accepted wordings on an unmapped transform."""
+    raw = str(exc)
+    if "unmappable applied_transform" not in raw:
+        return f"{type(exc).__name__}: {raw}"
+    return f"{type(exc).__name__}: {_DEV_HINT.sub('', raw)} — {transform_help()}"
+
+
+def _plot_kind(value: Any, where: str) -> str:
+    """Normalize a plot kind the renderer's own way, but REJECT an unrecognized one.
+
+    `build_chart._plot_kind_of` deliberately falls back to a line, and in the daily lane
+    that is right: the shape is cosmetic and `--replot` corrects it later. In the chat
+    lane the operator reads the render as the answer, so a value the renderer discards
+    ("area", "histogram") would come back as a line with nothing anywhere saying the
+    request was dropped. Same normalizer — calling it rather than re-implementing it,
+    so "columns" and "stacked bars" keep resolving as they do in the daily lane — with
+    a loud floor under it.
+    """
+    raw = str(value or "").strip()
+    if not raw:
+        return "line"
+    kind = BC._plot_kind_of({"plot_kind": raw})
+    if kind == "line" and raw.lower().replace("-", " ").replace("_", " ") not in _LINE_WORDS:
+        raise ValueError(
+            f"{where}: unrecognized plot_kind {raw!r} — use one of "
+            f"{', '.join(PLOT_KINDS)}. Read the shape off the source chart: bars for a "
+            f"bar/column chart, stacked_bar for a contribution chart, line otherwise.")
+    return kind
 
 
 # ─────────────────────────────── resolution ─────────────────────────────────
@@ -81,10 +151,11 @@ def resolve_one(base_descriptor: str, applied_transform: str = "", formula: str 
                 sa_hint: str = "", freq_hint: str = "", axis: str = "shared",
                 lag: str = "", plot_kind: str = "line") -> dict:
     """Resolve ONE series through the daily lane's resolver. A park is a normal return."""
+    kind = _plot_kind(plot_kind, "resolve_series")
     spec = {"description": base_descriptor, "base_descriptor": base_descriptor,
             "applied_transform": applied_transform, "formula": formula,
             "sa_hint": sa_hint or "unknown", "freq_hint": freq_hint or "unknown",
-            "axis": axis or "shared", "lag": lag, "plot_kind": plot_kind or "line"}
+            "axis": axis or "shared", "lag": lag, "plot_kind": kind}
     with quiet_stdout():
         slot = R.slot_from_series(0, spec)
         slot = _dlx_verify(R.resolve_slot(slot, **_resolve_kwargs()))
@@ -113,7 +184,7 @@ def resolve_one(base_descriptor: str, applied_transform: str = "", formula: str 
                  "base_descriptor": slot.get("base_descriptor"),
                  "axis": slot.get("axis") or "shared",
                  "lag": slot.get("lag") or None,
-                 "plot_kind": plot_kind or "line"},
+                 "plot_kind": kind},
     }
 
 
@@ -141,7 +212,7 @@ def build_row(series: list[dict], *, title: str = "", subtitle: str = "",
         slot["idx"] = i
         slot["status"] = "resolved"
         slot.setdefault("axis", "shared")
-        slot.setdefault("plot_kind", "line")
+        slot["plot_kind"] = _plot_kind(slot.get("plot_kind"), f"series[{i}]")
         if not slot.get("formula") and not slot.get("resolved"):
             raise ValueError(
                 f"series[{i}] has neither `resolved` nor `formula`+`codes`. Resolve it "

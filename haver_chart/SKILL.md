@@ -22,7 +22,9 @@ supply from memory bypasses all of it.
 1. **Read the screenshot.** For each plotted line, note the series name exactly as
    printed, any formula printed on the chart, the transform, SA/NSA, frequency, the
    axis it sits on, any lag tag, the sample start, the axis min/max, and whether there
-   is recession shading. Note the plot kind if it is bars rather than lines.
+   is recession shading. Note the **plot kind**: bars, stacked bars, or lines. Nothing
+   downstream can infer this from the data, so a bar chart you do not report comes back
+   as lines.
 
 2. **Resolve each series** with `resolve_series`.
    - If the chart prints a formula (`zs(yryr%(IP))`), pass it **verbatim** in `formula`.
@@ -35,6 +37,8 @@ supply from memory bypasses all of it.
      transform plots a level as a percent change; that is a real bug that shipped.
    - Pass `sa_hint` when the chart says SA or NSA. It is a hard cross-check.
    - Lags use Haver bracket syntax: `[-4]` lags four observations, `[+4]` leads four.
+   - Pass `plot_kind` — `"bar"`, `"stacked_bar"` or `"line"` — from what you saw in
+     step 1. It travels in the returned `slot`, so setting it once is enough.
 
 3. **Handle parks by asking.** `status: "parked"` is a normal outcome, not a failure.
    Show the user the top-3 `candidates` with their `similarity` and
@@ -58,7 +62,8 @@ The errors are guardrails, not obstacles. Do not work around them.
 
 | Error | What it means |
 |---|---|
-| `unmappable applied_transform '…'` | The vocabulary rejected your phrase. Restate it in Haver's own wording, or pass the printed formula instead. |
+| `unmappable applied_transform '…'` | The vocabulary rejected your phrase. The error lists the wordings it does accept — restate it in one of those, or pass the printed formula instead. |
+| `unrecognized plot_kind '…'` | Only `line`, `bar` and `stacked_bar` exist. It raises instead of falling back to a line, so that a dropped bar chart cannot pass unnoticed. |
 | `render needs every slot resolved` | A slot parked. Return to step 3. |
 | duplicate / raw-mnemonic legend | Supply a distinct human-readable `proposed_legend`. Never let a bare ticker be a label. |
 | `KeyError: 'D'` | Daily frequency is not supported. Ask whether the weekly twin will do. |
