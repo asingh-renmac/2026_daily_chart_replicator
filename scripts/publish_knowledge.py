@@ -36,6 +36,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
+for _s in (sys.stdout, sys.stderr):          # cp1252 consoles mangle the report glyphs
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
+    except Exception:
+        pass
+
 import resolve as R  # noqa: E402
 
 DEFAULT_DEST = Path("P:/Public/RenMac_Chart_Knowledge")
@@ -77,6 +83,55 @@ by scripts/publish_knowledge.py in 2026_daily_chart_replicator.
 """
 
 
+class PublishError(RuntimeError):
+    """The stores were not published. Raised BEFORE the destination is touched."""
+
+
+def publish(src: Path, dest: Path, *, dry_run: bool = False, log=print) -> dict:
+    """Copy the allowlisted stores to `dest`. Returns {name: entry_count}.
+
+    Every store is validated first, so a corrupt file aborts the whole publish
+    instead of half-updating the share — the reader swallows a JSON error as `{}`,
+    which would silently cost every teammate their legend labels."""
+    src, dest = Path(src), Path(dest)
+    if not src.is_dir():
+        raise PublishError(f"source folder does not exist: {src}")
+
+    counts: dict[str, int] = {}
+    for name in STORES:
+        p = src / name
+        if not p.exists():
+            raise PublishError(f"missing store {name} in {src}")
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+        except Exception as exc:
+            raise PublishError(f"{name} is not valid JSON ({exc}) — nothing published")
+        if not isinstance(data, dict):
+            raise PublishError(f"{name} is not a JSON object — nothing published")
+        counts[name] = len(data)
+        log(f"  ok  {name:<28} {len(data):>4} entries  {p.stat().st_size:>7,} bytes")
+
+    skipped = sorted(q.name for q in src.iterdir() if q.name not in STORES)
+    if skipped:
+        log(f"  not published (not on the allowlist): {', '.join(skipped)}")
+
+    if dry_run:
+        log("  DRY RUN — nothing written.")
+        return counts
+
+    dest.mkdir(parents=True, exist_ok=True)
+    for name in STORES:
+        # temp-then-replace so a reader on the share never sees a half-written file
+        tmp = dest / f".{name}.tmp"
+        shutil.copyfile(src / name, tmp)
+        os.replace(tmp, dest / name)
+    (dest / "README.txt").write_text(
+        README.format(dest=str(dest).replace("/", "\\"),
+                      when=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+                      src=src), encoding="utf-8")
+    return counts
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dest", default=str(DEFAULT_DEST))
@@ -84,54 +139,17 @@ def main() -> int:
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
-    src, dest = Path(args.src), Path(args.dest)
-    print(f"source : {src}")
-    print(f"dest   : {dest}")
+    print(f"source : {args.src}")
+    print(f"dest   : {args.dest}")
     print(f"mode   : {'DRY RUN' if args.dry_run else 'publish'}\n")
-
-    if not src.is_dir():
-        print(f"ERROR: source folder does not exist: {src}")
+    try:
+        counts = publish(Path(args.src), Path(args.dest), dry_run=args.dry_run)
+    except PublishError as exc:
+        print(f"ERROR: {exc}")
         return 2
-
-    # Validate BEFORE touching the destination: publishing a corrupt store would
-    # break every teammate at once, and the reader swallows JSON errors as {}.
-    payload = {}
-    for name in STORES:
-        p = src / name
-        if not p.exists():
-            print(f"ERROR: missing store {name}")
-            return 2
-        try:
-            data = json.loads(p.read_text(encoding="utf-8"))
-        except Exception as exc:
-            print(f"ERROR: {name} is not valid JSON ({exc}) — nothing published")
-            return 2
-        if not isinstance(data, dict):
-            print(f"ERROR: {name} is not a JSON object — nothing published")
-            return 2
-        payload[name] = (p, len(data))
-        print(f"  ok  {name:<28} {len(data):>4} entries  {p.stat().st_size:>7,} bytes")
-
-    skipped = sorted(q.name for q in src.iterdir() if q.name not in STORES)
-    if skipped:
-        print(f"\n  not published (not on the allowlist): {', '.join(skipped)}")
-
     if args.dry_run:
-        print("\nDRY RUN — nothing written.")
         return 0
-
-    dest.mkdir(parents=True, exist_ok=True)
-    for name, (p, _n) in payload.items():
-        # temp-then-replace so a reader on the share never sees a half-written file
-        tmp = dest / f".{name}.tmp"
-        shutil.copyfile(p, tmp)
-        os.replace(tmp, dest / name)
-    (dest / "README.txt").write_text(
-        README.format(dest=str(dest).replace("/", "\\"),
-                      when=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
-                      src=src), encoding="utf-8")
-
-    print(f"\nPublished {len(payload)} store(s) + README.txt to {dest}")
+    print(f"\nPublished {len(counts)} store(s) + README.txt to {args.dest}")
     print("Teammates: set CLARIFIED_KNOWLEDGE_DIR to that folder, then restart Claude.")
     return 0
 

@@ -373,6 +373,38 @@ def _downstream(date_str: str, *, mode: str = "confirm_all",
     _seam_report(led)
 
 
+def _publish_stores() -> None:
+    """Copy the ratified stores to the shared drive so teammates inherit today's binds.
+
+    Runs LAST and never fails the day. An approval round writes `learned_descriptors`
+    / `legend_labels` / `trusted_tickers`, and those writes are what a teammate's chat
+    lane reads; without this they would only ever see the state of the day the folder
+    was last copied by hand.
+
+    Deliberately fail-soft, and deliberately at the END. The share is a network path:
+    it can be disconnected on a laptop, or slow. The day's real work — ingest, resolve,
+    the Teams round-trips, the renders — is already finished and saved by the time this
+    runs, so a share problem must warn and nothing more. Set `G7_NO_PUBLISH=1` to skip.
+    """
+    if os.environ.get("G7_NO_PUBLISH", "").lower() in ("1", "true", "yes"):
+        print("  [publish] skipped (G7_NO_PUBLISH set)")
+        return
+    try:
+        if str(ROOT / "scripts") not in sys.path:
+            sys.path.insert(0, str(ROOT / "scripts"))
+        import publish_knowledge as PK
+        import resolve as R
+        counts = PK.publish(R.CLARIFIED_DIR, PK.DEFAULT_DEST,
+                            log=lambda m: None)      # quiet; summarize below
+        total = ", ".join(f"{n.split('.')[0]} {c}" for n, c in counts.items())
+        print(f"  [publish] stores -> {PK.DEFAULT_DEST}  ({total})")
+    except Exception as exc:
+        print(f"  [publish] SKIPPED — {type(exc).__name__}: {exc}\n"
+              f"            teammates keep the previously published stores; re-run "
+              f"`python scripts/publish_knowledge.py` when the share is reachable",
+              file=sys.stderr)
+
+
 def _retitle(date_str: str, chart_id: str, *, do_render: bool = True) -> int:
     """Re-open a resolved/rendered chart's TITLE round-trip WITHOUT re-resolving —
     tickers/transforms/axes are already approved and must not be disturbed.
@@ -731,10 +763,14 @@ def main(argv: list[str]) -> int:
     date_str = args.date or datetime.now(I.EASTERN).strftime("%Y-%m-%d")
 
     if args.retitle:                        # focused title-only re-open; no ingest/seed
-        return _retitle(date_str, args.retitle, do_render=not args.no_render)
+        rc = _retitle(date_str, args.retitle, do_render=not args.no_render)
+        _publish_stores()
+        return rc
 
     if args.relegend:                       # focused legend-only re-open; no ingest/seed
-        return _relegend(date_str, args.relegend, do_render=not args.no_render)
+        rc = _relegend(date_str, args.relegend, do_render=not args.no_render)
+        _publish_stores()
+        return rc
 
     sources = ["email", "bloomberg"] if args.source == "all" else [args.source]
 
@@ -777,6 +813,7 @@ def main(argv: list[str]) -> int:
     if args.approve:
         _downstream(date_str, mode=args.resolution_mode,
                     do_render=not args.no_render)
+        _publish_stores()
     return 0
 
 

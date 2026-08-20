@@ -266,14 +266,20 @@ ledger.
 
 # Sharing this with teammates
 
-**There is still no distributable zip for `haver-chart`.** Packaging is gate G9e in
-`plan.md` §13.11. The zips in `2026_haver_mcp/dist/` are for the *data* MCP, which is
-genuinely standalone — it needed only `haver` and `fastmcp`, so it zips cleanly. This is
-a thin wrapper over a much larger machine, and the machine does not travel with it.
+**There is a distributable zip.** Build it with:
 
-Three of the four G9e steps are now done: the paths are relocatable (step 1), the
-credential policy is decided (step 2), and the knowledge stores are published to
-`P:\Public\RenMac_Chart_Knowledge` (step 3). Only the package itself (step 4) is left.
+```bash
+python scripts/build_teammate_package.py --list   # manifest, writes nothing
+python scripts/build_teammate_package.py          # dist/haver-chart-<sha>-<date>.zip
+```
+
+Send the zip; send the Neon URL separately, because the zip deliberately carries no
+credential. The teammate unzips, runs `configure.py`, and reads `README_FIRST.md`
+(which is `haver_chart/TEAMMATE_SETUP.md`).
+
+All four G9e steps are done: the paths are relocatable (step 1), the credential policy
+is decided (step 2), the stores publish to `P:\Public\RenMac_Chart_Knowledge` on every
+approval round (step 3), and the package builds from any commit (step 4).
 
 ## What the lane actually reaches outside this repo
 
@@ -348,6 +354,13 @@ python scripts/publish_knowledge.py            # publish
 python scripts/publish_knowledge.py --dry-run  # show what would be published
 ```
 
+**`run_daily` now publishes automatically.** Every path that can write a store — the
+`--approve` round, `--retitle`, `--relegend` — calls `_publish_stores()` when it
+finishes, so a teammate's copy is never more than one approval round behind. It runs
+**last** and is **fail-soft**: the day's ingest, resolves, Teams round-trips and renders
+are already saved by the time it fires, so an unmapped drive prints a warning naming the
+manual re-run and nothing else. `G7_NO_PUBLISH=1` skips it.
+
 **Why a publish step rather than pointing the daily lane straight at P:.** Two reasons,
 both about not putting a network share on the approval path. `resolve.save_legend` does
 an unguarded read-modify-write with no atomic rename, so a reader on the share can catch
@@ -394,25 +407,41 @@ bind was possible, which the operator resolves by picking a candidate.
 This is also why the subscribe model is worth the extra repo: a copy inherits a
 snapshot, a pull stays subscribed, and neither can ever conflict.
 
-### Step 4 — package — **OPEN, blocked only on step 3**
+### Step 4 — package — **DONE 2026-08-20**
 
-The zip is mechanical: `haver_chart/`, `src/`, `scripts/`, `requirements.txt`, a copy of
-`renmac_chart_style.py` (or a pinned clone of `econ-templates`), the
-`2026_haver_mcp/server/` query modules, an `.env.example`, and a teammate-facing SETUP
-that sets the three variables. Model it on `2026_haver_mcp/dist/HaverData.zip`, which
-already proves the shape.
+`scripts/build_teammate_package.py` builds `dist/haver-chart-<sha>-<date>.zip`:
+
+```
+haver-chart/
+  README_FIRST.md   <- haver_chart/TEAMMATE_SETUP.md
+  configure.py      <- hoisted to the root; the teammate's one command
+  repo/             <- tracked files at HEAD, minus plan.md/prompt.md/.cursor/
+  vendor/charts/    <- renmac_chart_style.py
+  vendor/haver_mcp/ <- db.py, queries.py, and a .env EXAMPLE
+```
+
+Two choices worth recording. **The file list comes from `git ls-tree HEAD`, not a folder
+walk**: the working tree holds `notes/` (client email content), `data/` and `outputs/`,
+so shipping only committed tracked files means nothing untracked can ride along. **The
+two external modules are vendored** rather than cloned — all three files are small and
+pure-python and imported by path, so copying them turns a four-checkout setup into an
+unzip. `--list` prints each vendored file's mtime so drift is visible at build time.
+
+`configure.py` is the teammate-side half of the same idea. It resolves absolute paths
+from its own location, checks the interpreter's imports, writes the `.env`, and merges
+the `haver-chart` entry into Claude Desktop's config — backing the file up and keeping
+any MCP servers already there. Nobody hand-edits a path into JSON.
 
 ### Step 5 — what a teammate then does
 
-1. Install a Python 3.10+ venv and `pip install -r haver_chart/requirements.txt`.
-2. Install and log in to DLX.
-3. Set `ECON_TEMPLATES_CHARTS`, `HAVER_MCP_SERVER`, `CLARIFIED_KNOWLEDGE_DIR` and
-   `NEON_READONLY_DATABASE_URL` for their own machine.
-4. Run `haver_chart/selftest.py` and expect it green.
-5. Add the `haver-chart` entry to their Claude Desktop config with **their** paths.
+1. Unzip somewhere permanent (the path goes into their Claude config).
+2. `python -m venv …` and `pip install -r repo/haver_chart/requirements.txt`.
+3. Install and log in to DLX.
+4. `python configure.py --python <venv python> --neon-url "<sent separately>"`.
+5. Run `repo/haver_chart/selftest.py` and expect it green.
 6. Quit Claude from the tray icon and reopen.
 
-Steps 1 and 2 are done. Steps 3 and 4 are the remaining G9e work.
+All five are covered by `README_FIRST.md` in the zip.
 
 ---
 

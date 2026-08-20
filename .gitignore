@@ -10,6 +10,8 @@ inbox_bloomberg/
 notes/
 .verify.png
 .g4_inspect/
+# Built teammate zips: reproducible from any commit via build_teammate_package.py.
+dist/
 __pycache__/
 *.pyc
 .ipynb_checkpoints/
