@@ -271,10 +271,9 @@ ledger.
 genuinely standalone — it needed only `haver` and `fastmcp`, so it zips cleanly. This is
 a thin wrapper over a much larger machine, and the machine does not travel with it.
 
-Three of the four G9e steps are now settled: the paths are relocatable (step 1, built),
-the credential policy is decided (step 2), and the knowledge stores get their own
-subscribe-able repo (step 3, decided — not yet created). What remains to build is the
-package itself (step 4).
+Three of the four G9e steps are now done: the paths are relocatable (step 1), the
+credential policy is decided (step 2), and the knowledge stores are published to
+`P:\Public\RenMac_Chart_Knowledge` (step 3). Only the package itself (step 4) is left.
 
 ## What the lane actually reaches outside this repo
 
@@ -324,41 +323,52 @@ consequence rather than a bare pass/fail.
 - **`ANTHROPIC_API_KEY`** — not needed. The chat lane replaced `propose.py`, so there is
   no Opus call server-side.
 
-### Step 3 — how the knowledge stores travel — **DECIDED 2026-08-20: a remote, but not `knowledge_repo`'s**
+### Step 3 — how the knowledge stores travel — **DONE 2026-08-20: published to `P:\Public\RenMac_Chart_Knowledge`**
 
-The decision is that teammates **subscribe** rather than receive a one-off copy, so they
-stay current as the daily lane learns. Two facts found while recording it change *which*
-repo gets the remote:
+**Audit first — the stores are chart-replicator data only.** `knowledge_repo` also holds
+the post-ship commentary notes (`econometrics/`, `economics/`, `_anki/`,
+`code-cookbook/`), which are personal and must not be shared, so the folder was checked
+rather than assumed:
 
-1. **`clarified-knowledge/` is untracked.** `git status` in `knowledge_repo` reports it
-   as `?? clarified-knowledge/` — the four store files have never been committed there.
-   Giving `knowledge_repo` a remote would therefore ship none of them.
-2. **`knowledge_repo` is mostly not these files.** It also holds `econometrics/` (~64 KB
-   of personal concept notes), `economics/`, `_templates/`, `_anki/` and
-   `code-cookbook/`, and it carries 19 uncommitted files. Publishing all of that to
-   share four JSON files is a much wider disclosure than the decision intends.
+- No project outside `2026_daily_chart_replicator` references `clarified-knowledge` or
+  `CLARIFIED_KNOWLEDGE_DIR` anywhere in `new_work`.
+- Every entry validates against the chart schema — 102 learned descriptors and 91
+  trusted tickers all carry a well-formed `code@database`; the 79 legend keys are
+  tickers or `expr:` composite keys; 2 native-MA entries.
+- Timestamps run 2026-06-30 to 2026-08-11, the chart replicator's own lifetime.
+- Databases referenced are all Haver: CBDB, CPIDATA, DAILY, EMPL, LABOR, MKTPMI,
+  REALTOR, SURVEYS, USECON, USNA, WEEKLY.
 
-**So: give the STORES their own small private repo**, and point `CLARIFIED_KNOWLEDGE_DIR`
-at it. This needs no code — that variable already exists and `src/resolve.py` has always
-read it. Steps:
+**The share, not a git remote.** `P:\Public` is already reachable by everyone, so a repo
+would add a clone-and-pull step that buys nothing. Teammates set
+`CLARIFIED_KNOWLEDGE_DIR` to the published folder and read it directly.
 
 ```bash
-# 1. new PRIVATE repo under the work org, e.g. asingh-renmac/renmac-chart-knowledge
-# 2. seed it from the live stores
-cd C:/Users/asingh/new_work/knowledge_repo/clarified-knowledge
-git init && git add . && git commit -m "seed: ratified legend, learned, trusted, native-MA stores"
-git remote add origin git@github-work:asingh-renmac/renmac-chart-knowledge.git
-git push -u origin main
-# 3. point the daily lane at the same checkout (or leave the default path in place)
-#    setx CLARIFIED_KNOWLEDGE_DIR "C:/Users/asingh/new_work/renmac-chart-knowledge"
+python scripts/publish_knowledge.py            # publish
+python scripts/publish_knowledge.py --dry-run  # show what would be published
 ```
 
-A teammate then clones that one repo, sets `CLARIFIED_KNOWLEDGE_DIR` to it, and runs
-`git pull` whenever they want the daily lane's newer binds. **Not done — it publishes
-firm ticker mappings, so the org and visibility are your call.**
+**Why a publish step rather than pointing the daily lane straight at P:.** Two reasons,
+both about not putting a network share on the approval path. `resolve.save_legend` does
+an unguarded read-modify-write with no atomic rename, so a reader on the share can catch
+a truncated file mid-write — and `_read_json` swallows that as `{}`, silently costing
+every legend label for that call. And an unguarded write failure would raise in the
+middle of a Teams approval. So the daily lane keeps writing locally, and publishing
+copies finished files with temp-then-replace.
 
-The four files total about 47 KB, so the mechanics are trivial; the question is
-governance.
+**Why an allowlist rather than copying the folder.** The script names the four files.
+A new file appearing next to them — a commentary note, a scratch export — cannot be
+published by accident. It also validates every store parses as a JSON object before it
+touches the destination, because publishing a corrupt store would break every teammate
+at once and the reader would swallow the error.
+
+**Verified:** with `CLARIFIED_KNOWLEDGE_DIR` pointed at the share, all four stores load
+(102 / 79 / 91 / 2) and "Texas Mfg Outlook Survey: General Business Activity" binds to
+`DBACTS@SURVEYS` via `(learned)` with no catalog search — the fast path a teammate
+actually gains. Writes remain sealed.
+
+**Re-run `publish_knowledge.py` when you want teammates to see newer binds.** Nothing
+does it automatically.
 
 **How a read-only store still helps a teammate.** The stores are written by the *daily*
 lane, when Aman approves a resolution in Teams. The chat lane only reads them, and
