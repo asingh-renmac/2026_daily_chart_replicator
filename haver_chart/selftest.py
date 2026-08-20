@@ -43,14 +43,40 @@ for mod in ("fastmcp", "matplotlib", "pandas", "Haver"):
     except Exception as exc:
         check(False, f"{mod} importable", f"{type(exc).__name__}: {exc}")
 
-print("\n2. Import boundary (§13.5)")
+print("\n2. External paths (relocatable per G9e step 1)")
+# Three dependencies live outside this repo. Resolve them BEFORE the live calls so a
+# misconfigured machine fails here, with the variable to set, rather than at the first
+# render. Only the style module fails hard; the other two degrade, so they are reported
+# as their real consequence instead of as a pass/fail.
+import os  # noqa: E402
+
+for var, default, consequence in (
+    ("ECON_TEMPLATES_CHARTS", "C:/Users/asingh/new_work/econ-templates/charts",
+     "HARD — render.py cannot import renmac_chart_style and the lane will not start"),
+    ("HAVER_MCP_SERVER", "C:/Users/asingh/new_work/2026_haver_mcp/server",
+     "degrades — catalog search goes dark and every description-only series parks"),
+    ("CLARIFIED_KNOWLEDGE_DIR",
+     "C:/Users/asingh/new_work/knowledge_repo/clarified-knowledge",
+     "degrades — no learned binds or ratified legends; label every series explicitly"),
+):
+    path = Path(os.environ.get(var, default))
+    source = "env" if os.environ.get(var) else "default"
+    if var == "ECON_TEMPLATES_CHARTS":
+        check(path.is_dir(), f"{var} resolves ({source})",
+              str(path) if path.is_dir() else f"MISSING {path} -> {consequence}")
+    elif not path.is_dir():
+        print(f"  [WARN] {var} ({source}) missing: {path}\n         {consequence}")
+    else:
+        check(True, f"{var} resolves ({source})", str(path))
+
+print("\n3. Import boundary (§13.5)")
 from haver_chart import lane  # noqa: E402
 
 leaked = sorted(m for m in FORBIDDEN if m in sys.modules)
 check(not leaked, "chat lane imports none of the daily-lane-only modules",
       f"leaked: {leaked}" if leaked else "ingest/classify/ledger/teams/approval/propose absent")
 
-print("\n3. Learning stores are READ-ONLY (§13.6)")
+print("\n4. Learning stores are READ-ONLY (§13.6)")
 import resolve as R  # noqa: E402
 
 for reader in ("load_legend", "load_learned", "load_trusted", "load_clarified"):
@@ -71,7 +97,7 @@ for saver in ("save_legend", "save_learned", "save_trusted", "save_clarified"):
     except Exception as exc:
         check(False, f"{saver}() is sealed", f"raised {type(exc).__name__} instead")
 
-print("\n4. Live resolve (catalog + DLX)")
+print("\n5. Live resolve (catalog + DLX)")
 try:
     r = lane.resolve_one(base_descriptor="Philly Fed Mfg Business Outlook: Current "
                                          "Activity Diffusion Index",
@@ -85,7 +111,7 @@ except Exception as exc:
     check(False, "resolve_series live call", f"{type(exc).__name__}: {exc}")
     r = None
 
-print("\n5. Live render")
+print("\n6. Live render")
 if r and r["status"] == "resolved":
     try:
         out = lane.render([dict(r["slot"], proposed_legend="Philly Fed Mfg Current "
@@ -102,7 +128,7 @@ if r and r["status"] == "resolved":
 else:
     check(False, "render_chart live call", "skipped — resolve did not bind")
 
-print("\n6. Guardrails still raise (§13.7)")
+print("\n7. Guardrails still raise (§13.7)")
 try:
     lane.render([{"resolved": "BOCGX@SURVEYS", "applied_transform": "flurgle transform",
                   "proposed_legend": "x"}], filename="_never")
@@ -123,7 +149,7 @@ try:
 except ValueError as exc:
     check("resolve_series" in str(exc), "a slot with no ticker raises")
 
-print("\n7. Operator-facing contract")
+print("\n8. Operator-facing contract")
 # The advertised wordings are a hand-kept list (the mapper is branch logic, not a
 # table), so assert each one still maps. Without this the list rots silently and the
 # error message starts recommending phrases the renderer rejects.

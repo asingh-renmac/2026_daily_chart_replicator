@@ -12,12 +12,18 @@ False and the caller parks every description-only slot (fail-safe, never a guess
 """
 from __future__ import annotations
 
+import os
 import sys
 import time as _time
 from pathlib import Path
 from typing import Optional
 
-_SERVER = Path("C:/Users/asingh/new_work/2026_haver_mcp/server")
+# The catalog query modules live in the haver-metadata repo. The default is this
+# machine's checkout; `HAVER_MCP_SERVER` lets a different machine point at its own.
+# A wrong path here does NOT stop the process — `_ensure` catches it and every
+# description-only slot parks, which is the fail-safe already relied on (G9e step 1).
+_SERVER = Path(os.environ.get(
+    "HAVER_MCP_SERVER", "C:/Users/asingh/new_work/2026_haver_mcp/server"))
 _READY = None  # tri-state: None=untried, True=ok, False=unavailable
 
 # Neon scales the read-only mirror compute to ZERO when idle. The FIRST query of a run

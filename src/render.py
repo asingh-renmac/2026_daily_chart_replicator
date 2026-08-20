@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import re
 import sys
 from dataclasses import dataclass
@@ -45,7 +46,13 @@ import matplotlib.dates as mdates  # noqa: E402
 import matplotlib.ticker as mticker  # noqa: E402
 import pandas as pd  # noqa: E402
 
-_ECON_CHARTS = Path("C:/Users/asingh/new_work/econ-templates/charts")
+# The RenMac style module lives in a sibling repo. The default is this machine's
+# checkout, so nothing about the daily lane changes; `ECON_TEMPLATES_CHARTS` lets a
+# different machine point at its own clone. This is the ONE dependency that fails
+# hard when absent — the import below is uncaught, so a wrong path stops the process
+# rather than degrading, which is why it needs an override at all (G9e step 1).
+_ECON_CHARTS = Path(os.environ.get(
+    "ECON_TEMPLATES_CHARTS", "C:/Users/asingh/new_work/econ-templates/charts"))
 if str(_ECON_CHARTS) not in sys.path:
     sys.path.insert(0, str(_ECON_CHARTS))
 
