@@ -28,6 +28,12 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+for _s in (sys.stdout, sys.stderr):          # cp1252 consoles mangle the report glyphs
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
+    except Exception:
+        pass
+
 PKG = Path(__file__).resolve().parent
 REPO = PKG / "repo"
 CHARTS = PKG / "vendor" / "charts"
