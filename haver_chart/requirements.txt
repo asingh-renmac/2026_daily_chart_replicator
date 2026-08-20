@@ -1,0 +1,28 @@
+# Python packages the chat lane needs, with the versions it is proven against on
+# the shared venv (C:/Users/asingh/envs/shared-3.10, Python 3.10.11).
+#
+# This file documents the interpreter side of the setup ONLY. The lane also needs
+# four things pip cannot install — a Haver DLX licence and login, the RenMac style
+# module, the Neon catalog credential, and the ratified knowledge stores. See the
+# "Sharing this with teammates" section of SETUP.md.
+
+# The MCP surface.
+fastmcp==3.4.7
+
+# The chart pipeline.
+matplotlib==3.10.8
+pandas==2.3.3
+pyarrow==23.0.1          # parquet cache behind g4_lib.pull
+
+# Haver DLX client. Requires a licensed DLX install on the machine; the package
+# alone pulls nothing.
+Haver==3.5.1
+
+# Catalog search (haver_search -> 2026_haver_mcp/server/db.py) against the
+# read-only Neon mirror. Without these the lane still runs, but every
+# description-only series parks because search returns nothing.
+psycopg[binary]==3.3.4
+python-dotenv==0.9.9
+
+# Pixel diffing in scripts/g9b_lane_equivalence.py. Not needed to run the server.
+pillow==12.2.0

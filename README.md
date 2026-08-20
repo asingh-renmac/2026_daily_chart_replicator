@@ -213,6 +213,48 @@ python scripts/run_daily.py --date 2026-07-02 --source all --approve --retitle 2
 # then re-run the same command to harvest + re-render (tickers/legends untouched).
 ```
 
+### Example D — the chat lane (Claude Desktop, no email and no Teams)
+
+The same resolver and the same renderer, driven from a conversation instead of the
+inbox. You paste a Haver screenshot into Claude Desktop and iterate until the chart is
+right. Useful for a one-off rebuild that never came through Neil's email, and for
+anything where you want to see the pixels before committing to it.
+
+```
+You:    [paste a Haver chart]  Rebuild this. The formula printed on it is
+        zs(yryr%(IP)); the other line is the Philly Fed manufacturing survey's
+        current-activity diffusion index, z-scored. Shared axis, recession bands.
+
+Claude: resolve_series(base_descriptor="Industrial Production",
+                       formula="zs(yryr%(IP))", sa_hint="sa")
+          -> resolved: ip@ip
+
+        resolve_series(base_descriptor="Philly Fed Mfg Business Outlook: Current
+                                        Activity Diffusion Index",
+                       applied_transform="Z-Score", sa_hint="sa")
+          -> resolved: bocgx@surveys   (sim 1.0, exact token match;
+                                        siblings bocivx/bocnex both scored 0.8)
+
+        render_chart(...)  -> outputs/chat/2026-08-20/philly_fed_ip.png   [shown inline]
+
+You:    Put the survey on the right axis and lag it three months.
+        [re-renders in place]
+```
+
+It resolves through the **same** `resolve.py` gates as the daily lane (exact token-set
+bind, SA and aggregation cross-checks, DLX confirmation) and renders through the **same**
+`build_chart.render_row`, so the output is pixel-for-pixel what the daily lane would draw
+on the same data — that equivalence is gated by `scripts/g9b_lane_equivalence.py`. It reads every learning
+store the daily lane has accumulated but **never writes them**, and it writes only to
+`outputs/chat/<date>/`, never to a backfill render dir or the ledger.
+
+Setup, worked examples, and the guardrail reference: **`haver_chart/SETUP.md`**.
+Design and gates: `plan.md` §13. Pre-flight check:
+
+```bash
+C:/Users/asingh/envs/shared-3.10/Scripts/python.exe haver_chart/selftest.py   # expects 28/28
+```
+
 ---
 
 ## CLI flags
