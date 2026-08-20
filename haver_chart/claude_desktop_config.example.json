@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "haver-data": {
+      "command": "C:/Users/asingh/envs/shared-3.10/Scripts/python.exe",
+      "args": ["C:/Users/asingh/new_work/2026_haver_mcp/haver_data/server.py"]
+    },
+    "haver-chart": {
+      "command": "C:/Users/asingh/envs/shared-3.10/Scripts/python.exe",
+      "args": ["C:/Users/asingh/new_work/2026_daily_chart_replicator/haver_chart/server.py"]
+    }
+  }
+}

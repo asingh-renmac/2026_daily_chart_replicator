@@ -740,5 +740,13 @@ def render_row(row: dict, save_path: str) -> dict:
         x_tick_years=cs.get("x_tick_years"), x_label_fmt=cs.get("x_label_fmt"))
     Path(save_path).parent.mkdir(parents=True, exist_ok=True)
     _, info = render(plotted, spec, save_path=save_path)
+    # `drawn` carries the PlotSeries actually rendered, so a caller can run
+    # validate.check_last_value against the data BEHIND the pixels rather than
+    # re-deriving it. Re-deriving means recreating the window, the common frequency
+    # and the applied formula by hand, and a window-ZS evaluated over a different
+    # window is a different number — the check would then be validating a
+    # reconstruction of a reconstruction. Additive: existing callers read
+    # save_path/plotted/end and are unaffected.
     return {"ok": True, "save_path": save_path, "plotted": list(info["plotted"]),
-            "end": str(end.date())}
+            "end": str(end.date()), "drawn": plotted, "window": window,
+            "common_freq": common}
