@@ -45,9 +45,29 @@ REQUIRED = ("fastmcp", "matplotlib", "pandas", "psycopg", "dotenv", "Haver")
 
 
 def _claude_config() -> Path:
+    """Where Claude Desktop reads its config — which depends on how it was installed.
+
+    The MSIX/Store build does NOT use %APPDATA%\\Claude; it redirects to a per-package
+    LocalCache tree. Writing the plain path on an MSIX machine creates a file Claude
+    never reads, and the failure is silent — you restart, no tools appear, and nothing
+    says why. So prefer whichever config ALREADY EXISTS, and only fall back to creating
+    the plain path when neither does.
+    """
     if sys.platform == "darwin":
         return Path.home() / "Library/Application Support/Claude/claude_desktop_config.json"
-    return Path(os.environ.get("APPDATA", Path.home())) / "Claude" / "claude_desktop_config.json"
+    local = Path(os.environ.get("LOCALAPPDATA", Path.home()))
+    roaming = Path(os.environ.get("APPDATA", Path.home()))
+    msix = sorted((local / "Packages").glob(
+        "Claude_*/LocalCache/Roaming/Claude/claude_desktop_config.json"))
+    plain = roaming / "Claude" / "claude_desktop_config.json"
+    if plain.exists():
+        return plain
+    if msix:
+        return msix[0]
+    # Neither exists: an MSIX install still has the package folder even before the
+    # config is written, so look for that before defaulting to the plain path.
+    pkg_dirs = sorted((local / "Packages").glob("Claude_*/LocalCache/Roaming/Claude"))
+    return (pkg_dirs[0] / "claude_desktop_config.json") if pkg_dirs else plain
 
 
 def _check_interpreter(py: Path) -> list[str]:

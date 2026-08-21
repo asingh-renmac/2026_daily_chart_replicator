@@ -3,9 +3,11 @@
 The chat lane (plan.md §13): paste a Haver screenshot into Claude Desktop and get a
 RenMac render back, iterating in the conversation until it is right.
 
-This is a **single-machine setup** (Aman's). Unlike `haver-data`, it is not packaged
-for distribution — it runs from this repo checkout and needs matplotlib, pandas, the
-RenMac style module and this repo's `src/`. Teammate distribution is G9e.
+These steps are for **Aman's machine**, running straight from this repo checkout, where
+all three external paths already resolve to their defaults and no environment variables
+are needed. For a **teammate**, do not follow this file — build the zip (see "Sharing
+this with teammates" below) and have them follow `TEAMMATE_SETUP.md`, which ships inside
+it as `README_FIRST.md`.
 
 ---
 
@@ -31,7 +33,7 @@ cd C:/Users/asingh/new_work/2026_daily_chart_replicator
 C:/Users/asingh/envs/shared-3.10/Scripts/python.exe haver_chart/selftest.py
 ```
 
-Expected: `28/28 checks passed`. It checks the import boundary (§13.5), that the
+Expected: `31/31 checks passed`. It checks the import boundary (§13.5), that the
 learning stores are sealed read-only (§13.6), that a live resolve binds
 `bocgx@surveys`, that a render lands in `outputs/chat/`, and that the fail-loud
 guardrails still raise.

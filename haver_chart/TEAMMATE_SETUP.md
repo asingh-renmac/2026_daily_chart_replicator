@@ -69,7 +69,10 @@ C:\Users\%USERNAME%\envs\haver-chart\Scripts\python.exe configure.py ^
     --neon-url "<the URL Aman sent you>"
 ```
 
-Add `--show` first if you want to see exactly what it will write and change nothing.
+Add `--show` first if you want to see exactly what it will write and change nothing. The
+line it prints as `claude config:` is worth a glance — Claude Desktop stores that file in
+one of two places depending on how it was installed, and `configure.py` picks whichever
+one your machine actually uses.
 
 If your `P:` drive is mapped somewhere else, add
 `--knowledge "<your path>\RenMac_Chart_Knowledge"`.
@@ -141,7 +144,7 @@ tomorrow. Tell Aman — one approval on his side fixes it for the whole team.
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| Claude doesn't list the tools | it didn't restart, or the config path is wrong | quit from the tray; re-run `configure.py --show` and check the path exists |
+| Claude doesn't list the tools | it didn't restart, or the config went to the wrong file | quit from the tray; re-run `configure.py --show` and confirm the `claude config:` line matches the file Settings → Developer → Edit Config opens |
 | "catalog unavailable"; everything parks | no or bad Neon URL | re-run `configure.py --neon-url "..."` |
 | Series bind but legends are generic | `P:` not reachable | map the drive, restart Claude |
 | Import error on `renmac_chart_style` | package folder was moved after setup | re-run `configure.py` from the new location |
