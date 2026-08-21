@@ -138,7 +138,25 @@ def main() -> int:
     size = out.stat().st_size
     print(f"\nWrote {out}  ({size / 1024:.0f} KB, "
           f"{len(files) + len(VENDOR) + 3} entries)")
-    print("Send the zip. Send the Neon URL separately — it is not in the zip.")
+
+    # Separate, tiny zip: Claude's skill uploader wants an archive whose ROOT is a
+    # folder named exactly like the `name:` in SKILL.md's frontmatter, so it cannot
+    # just be a path inside the package zip. Mirrors haver-data-pull.zip next door.
+    skill_src = ROOT / "haver_chart" / "SKILL.md"
+    name = ""
+    for line in skill_src.read_text(encoding="utf-8").splitlines()[:6]:
+        if line.startswith("name:"):
+            name = line.split(":", 1)[1].strip()
+            break
+    if not name:
+        print("WARNING: no `name:` in SKILL.md frontmatter — skill zip not built")
+        return 0
+    skill_out = DIST / f"{name}.zip"
+    with zipfile.ZipFile(skill_out, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr(f"{name}/SKILL.md", skill_src.read_text(encoding="utf-8"))
+    print(f"Wrote {skill_out}  ({skill_out.stat().st_size:,} bytes) — optional skill")
+
+    print("\nSend both zips. Send the Neon URL separately — it is not in either.")
     return 0
 
 
