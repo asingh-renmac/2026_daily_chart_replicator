@@ -63,10 +63,10 @@ One command. It checks your interpreter, writes the catalog credential, and trie
 add `haver-chart` to Claude Desktop's config without disturbing any MCP servers you
 already have (it backs the file up first).
 
-```bat
-C:\Users\%USERNAME%\envs\haver-chart\Scripts\python.exe configure.py ^
-    --python C:\Users\%USERNAME%\envs\haver-chart\Scripts\python.exe ^
-    --neon-url "<the URL Aman sent you>"
+Paste this as one line in PowerShell. Replace the URL first.
+
+```powershell
+C:\Users\$env:USERNAME\envs\haver-chart\Scripts\python.exe configure.py --python C:\Users\$env:USERNAME\envs\haver-chart\Scripts\python.exe --neon-url "<the URL Aman sent you>"
 ```
 
 Add `--show` first if you want to see exactly what it will write and change nothing. The
