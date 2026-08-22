@@ -22,7 +22,7 @@ Haver==3.5.1
 # read-only Neon mirror. Without these the lane still runs, but every
 # description-only series parks because search returns nothing.
 psycopg[binary]==3.3.4
-python-dotenv==0.9.9
+python-dotenv==1.2.2
 
 # Pixel diffing in scripts/g9b_lane_equivalence.py. Not needed to run the server.
 pillow==12.2.0
