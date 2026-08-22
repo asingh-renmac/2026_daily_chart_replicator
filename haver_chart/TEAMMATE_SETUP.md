@@ -59,8 +59,8 @@ internal wheel; every other package is public.
 
 ## 3. Point everything at your machine
 
-One command. It checks your interpreter, writes the catalog credential, and adds
-`haver-chart` to Claude Desktop's config without disturbing any MCP servers you
+One command. It checks your interpreter, writes the catalog credential, and tries to
+add `haver-chart` to Claude Desktop's config without disturbing any MCP servers you
 already have (it backs the file up first).
 
 ```bat
@@ -70,31 +70,88 @@ C:\Users\%USERNAME%\envs\haver-chart\Scripts\python.exe configure.py ^
 ```
 
 Add `--show` first if you want to see exactly what it will write and change nothing. The
-line it prints as `claude config:` is worth a glance — Claude Desktop stores that file in
-one of two places depending on how it was installed, and `configure.py` picks whichever
-one your machine actually uses.
+block it prints as `MCP entry to install` is the JSON you will paste in the next step
+if the script does not write the file for you.
+
+The line it prints as `claude config:` is worth a glance — Claude Desktop stores that
+file in one of two places depending on how it was installed, and `configure.py` picks
+whichever one your machine actually uses.
 
 If your `P:` drive is mapped somewhere else, add
 `--knowledge "<your path>\RenMac_Chart_Knowledge"`.
 
-## 4. Prove it works before you touch Claude
+A successful run prints `ok    wrote haver-chart` near the end. If it stops at
+`1. Interpreter` with `FAIL`, or you never see that `wrote` line, **the config was
+not changed.** Do the next step by hand. The selftest can still pass — it does not
+talk to Claude.
+
+## 4. Add the tool in Claude Desktop (do this if step 3 did not write the file)
+
+This is the same step as `haver-data`. Claude only learns about a local tool from
+`claude_desktop_config.json`. If that file has no `haver-chart` entry, the chat will
+not see `resolve_series` or `render_chart`.
+
+1. Run `configure.py --show` if you do not still have the JSON on screen. Copy the
+   object inside `"haver-chart": { ... }` (the `command`, `args`, and `env` block).
+2. Open **Claude Desktop**.
+3. Go to **Settings → Developer → Edit Config**. This opens the right file — do not
+   hunt for it yourself. The location differs between the Store build and the
+   classic install.
+4. **Do not delete anything already there.** You are adding one block.
+   - If the file already has `"mcpServers"`, add a `"haver-chart"` entry next to
+     the others. Put a comma after the previous entry.
+   - If it does not have `"mcpServers"`, add the whole block below just after the
+     opening `{` on the first line.
+
+```json
+  "mcpServers": {
+    "haver-chart": {
+      "command": "C:/Users/<you>/envs/haver-chart/Scripts/python.exe",
+      "args": ["C:/Users/<you>/demo/haver-chart/repo/haver_chart/server.py"],
+      "env": {
+        "ECON_TEMPLATES_CHARTS": "C:/Users/<you>/demo/haver-chart/vendor/charts",
+        "HAVER_MCP_SERVER": "C:/Users/<you>/demo/haver-chart/vendor/haver_mcp/server",
+        "CLARIFIED_KNOWLEDGE_DIR": "P:\\Public\\RenMac_Chart_Knowledge"
+      }
+    }
+  },
+```
+
+Replace every path with the ones `configure.py --show` printed. Those paths must
+match **your** unzip folder and **your** venv. Do not copy the `<you>` example as-is.
+
+5. **Save** the file and close the editor.
+
+Two things break this, both silently:
+
+- **Backslashes in `command` and `args`.** Use forward slashes (`C:/Users/...`),
+  exactly as `configure.py` printed them. A single `\` can invalidate the JSON and
+  Claude then ignores the whole file with no error. The `CLARIFIED_KNOWLEDGE_DIR`
+  value may keep `P:\\Public\\...` — that is a JSON string, and is fine.
+- **A missing or extra comma.** Every entry except the last needs a comma after it.
+
+## 5. Prove the pipeline works (this does not add the tool to Claude)
 
 ```bat
 C:\Users\%USERNAME%\envs\haver-chart\Scripts\python.exe repo\haver_chart\selftest.py
 ```
 
 This resolves a real series and renders a real PNG. Read the last line: if it says all
-checks passed, the server is fine and any remaining problem is Claude's config or the
-restart. Individual `WARN` lines are survivable and say what you lose.
+checks passed, the **server** is fine. It does not write Claude's config. If the
+selftest is green and Claude still has no tools, you missed step 4 or the restart.
 
-## 5. Restart Claude Desktop properly
+Individual `WARN` lines are survivable and say what you lose.
+
+## 6. Restart Claude Desktop properly
 
 Quit it **from the system tray** — closing the window leaves it running and it will not
 re-read the config. Reopen it and ask:
 
 > what haver-chart tools do you have?
 
-You should get `resolve_series` and `render_chart`.
+You should get `resolve_series` and `render_chart`. If Claude says it has no such
+tools, open Settings → Developer and confirm `haver-chart` is listed. If it is not,
+redo step 4.
 
 ---
 
@@ -144,7 +201,7 @@ tomorrow. Tell Aman — one approval on his side fixes it for the whole team.
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| Claude doesn't list the tools | it didn't restart, or the config went to the wrong file | quit from the tray; re-run `configure.py --show` and confirm the `claude config:` line matches the file Settings → Developer → Edit Config opens |
+| Claude doesn't list the tools | the `haver-chart` block is missing from the config, or Claude did not restart | paste the JSON from `configure.py --show` via Settings → Developer → Edit Config (step 4); quit from the tray |
 | "catalog unavailable"; everything parks | no or bad Neon URL | re-run `configure.py --neon-url "..."` |
 | Series bind but legends are generic | `P:` not reachable | map the drive, restart Claude |
 | Import error on `renmac_chart_style` | package folder was moved after setup | re-run `configure.py` from the new location |

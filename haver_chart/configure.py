@@ -71,14 +71,21 @@ def _claude_config() -> Path:
 
 
 def _check_interpreter(py: Path) -> list[str]:
-    """Return the names of REQUIRED modules `py` cannot import."""
-    code = ("import importlib,sys\n"
+    """Return the names of REQUIRED modules `py` cannot import.
+
+    `importlib.util` is a submodule: `import importlib` alone does not load it, and
+    the resulting AttributeError used to make this function report EVERY module as
+    missing and abort before writing the Claude config. Import the submodule
+    explicitly, and surface stderr if the probe itself dies.
+    """
+    code = ("import importlib.util, sys\n"
             "print(','.join(m for m in sys.argv[1:]"
             " if importlib.util.find_spec(m) is None))")
     out = subprocess.run([str(py), "-c", code, *REQUIRED],
                          capture_output=True, text=True, timeout=120)
     if out.returncode != 0:
-        return list(REQUIRED)
+        err = (out.stderr or out.stdout or "").strip() or f"exit {out.returncode}"
+        raise RuntimeError(f"interpreter probe failed: {err}")
     return [m for m in out.stdout.strip().split(",") if m]
 
 
@@ -121,7 +128,13 @@ def main() -> int:
     if not py.exists():
         print(f"  FAIL  no such interpreter: {py}")
         return 2
-    missing = _check_interpreter(py)
+    try:
+        missing = _check_interpreter(py)
+    except RuntimeError as exc:
+        print(f"  FAIL  {exc}")
+        print("        If the packages are already installed, paste the JSON above "
+              "into Claude → Settings → Developer → Edit Config (see README_FIRST.md).")
+        return 2
     if missing:
         print(f"  FAIL  missing module(s): {', '.join(missing)}")
         print(f"        {py} -m pip install -r "
@@ -129,6 +142,8 @@ def main() -> int:
         if "Haver" in missing:
             print("        `Haver` is the vendor package and needs a Haver DLX "
                   "entitlement — ask IT if pip cannot see it.")
+        print("        Or paste the JSON above into Claude → Settings → Developer "
+              "→ Edit Config (see README_FIRST.md).")
         return 2
     print(f"  ok    all {len(REQUIRED)} required modules import")
 

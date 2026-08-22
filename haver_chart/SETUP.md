@@ -432,7 +432,9 @@ unzip. `--list` prints each vendored file's mtime so drift is visible at build t
 `configure.py` is the teammate-side half of the same idea. It resolves absolute paths
 from its own location, checks the interpreter's imports, writes the `.env`, and merges
 the `haver-chart` entry into Claude Desktop's config — backing the file up and keeping
-any MCP servers already there. Nobody hand-edits a path into JSON.
+any MCP servers already there. If that write does not happen (the script stops at
+`1. Interpreter`), `README_FIRST.md` step 4 is the same hand-edit as `haver-data`:
+Settings → Developer → Edit Config, paste the JSON `configure.py --show` printed.
 
 ### Step 5 — what a teammate then does
 
@@ -440,10 +442,13 @@ any MCP servers already there. Nobody hand-edits a path into JSON.
 2. `python -m venv …` and `pip install -r repo/haver_chart/requirements.txt`.
 3. Install and log in to DLX.
 4. `python configure.py --python <venv python> --neon-url "<sent separately>"`.
-5. Run `repo/haver_chart/selftest.py` and expect it green.
-6. Quit Claude from the tray icon and reopen.
+5. If the script did not print `wrote haver-chart`, paste that JSON via
+   Settings → Developer → Edit Config (`README_FIRST.md` step 4).
+6. Run `repo/haver_chart/selftest.py` and expect it green. The selftest does not
+   add the tool to Claude.
+7. Quit Claude from the tray icon and reopen.
 
-All five are covered by `README_FIRST.md` in the zip.
+All seven are covered by `README_FIRST.md` in the zip.
 
 ---
 
