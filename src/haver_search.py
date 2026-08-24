@@ -25,6 +25,15 @@ from typing import Optional
 _SERVER = Path(os.environ.get(
     "HAVER_MCP_SERVER", "C:/Users/asingh/new_work/2026_haver_mcp/server"))
 _READY = None  # tri-state: None=untried, True=ok, False=unavailable
+_READY_FAILED_AT = 0.0  # monotonic clock of the last FAILED probe (0.0 = never)
+
+# How long a failed probe stays cached before `_ensure` tries again. A short-lived daily
+# run never reaches this — it probes once and lives with the answer. A long-lived server
+# (§14.5) must, because latching False forever turns a two-second startup race (the .env
+# not yet readable, the share not yet mapped) into permanent silent degradation: every
+# description-only slot parks for the life of the process with nothing anywhere saying
+# why. 60s is long enough that a genuine outage is not re-probed per call.
+_READY_RETRY_S = 60.0
 
 # Neon scales the read-only mirror compute to ZERO when idle. The FIRST query of a run
 # then pays a cold compute + cold buffer cache and can blow the MCP server's 15s
@@ -66,9 +75,11 @@ def _run_query(sql, params):
 
 
 def _ensure() -> bool:
-    global _READY
-    if _READY is not None:
-        return _READY
+    global _READY, _READY_FAILED_AT
+    if _READY:
+        return True
+    if _READY is False and (_time.monotonic() - _READY_FAILED_AT) < _READY_RETRY_S:
+        return False                   # still inside the cooldown — do not re-probe
     try:
         if str(_SERVER) not in sys.path:
             sys.path.insert(0, str(_SERVER))
@@ -77,8 +88,10 @@ def _ensure() -> bool:
         import db, queries  # noqa: F401
         _READY = True
     except Exception as exc:           # pragma: no cover - env-dependent
-        print(f"[haver_search] catalog unavailable ({exc}); description slots will park")
+        print(f"[haver_search] catalog unavailable ({exc}); description slots will park"
+              f" (retrying in {_READY_RETRY_S:.0f}s)")
         _READY = False
+        _READY_FAILED_AT = _time.monotonic()
     return _READY
 
 

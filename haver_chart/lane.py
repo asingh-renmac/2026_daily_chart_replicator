@@ -15,8 +15,12 @@ lane) without an MCP client in the loop.
 
 from __future__ import annotations
 
+import os
 import re
-from datetime import date
+import shutil
+import threading
+import uuid
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -31,6 +35,35 @@ with quiet_stdout():                      # importing Haver prints to stdout
 seal_stores(R)                            # §13.6 — reads allowed, writes raise
 
 OUT_ROOT = REPO_ROOT / "outputs" / "chat"
+
+# Renders are serialized process-wide (§14.5). Two reasons, and the first one applies
+# with a SINGLE user: pyplot is global state — `plt.subplots` and `plt.FuncFormatter` in
+# `render.py` both mutate it — and Claude issues parallel tool calls within one turn,
+# which FastMCP runs in a thread pool. The second is that `g4_lib.pull` writes its
+# parquet cache with no lock and no temp-then-replace, so serializing renders also
+# serializes every cache write this process makes. The lock lives HERE rather than in
+# `src/` so the daily lane's render path stays byte-for-byte unchanged, which is what
+# preserves the §13.10.1 pixel equivalence.
+_RENDER_LOCK = threading.Lock()
+
+# How long a caller waits for the lock before giving up. This is not tuning — it is the
+# guard for a specific, observed failure (§14.16): when the weekly DLX credential lapses,
+# a pull raises a GUI login modal, and on a host with no attached desktop that dialog has
+# nowhere to appear, so the call BLOCKS instead of failing. That call holds this lock, and
+# without a timeout every later render joins an invisible queue behind it and the server
+# is dead with nothing reporting it. Timing out cannot unwedge the stuck call — it is
+# inside a vendor library waiting on a window — but it turns a silent hang into a named
+# error, which is the difference between a support ticket and a mystery.
+RENDER_LOCK_TIMEOUT_S = float(os.environ.get("CHART_RENDER_LOCK_TIMEOUT_S", "300"))
+
+# Set when a render completes, for the HTTP `/health` probe: a wedged process still
+# answers a plain liveness check, so liveness has to mean "renders are moving".
+_last_render_finished: Optional[str] = None
+
+# Unique filenames (see `_save_path`) mean this folder only grows, which is harmless on a
+# laptop and unbounded on a server that stays up for months. 0 disables the sweep.
+RETENTION_DAYS = int(os.environ.get("CHAT_RETENTION_DAYS", "14"))
+_swept_on: Optional[str] = None
 
 # One accepted phrasing per family `build_chart._flat_transform` recognizes. The mapper
 # is branch logic over keyword stems rather than a table, so this list cannot be derived
@@ -245,18 +278,63 @@ def build_row(series: list[dict], *, title: str = "", subtitle: str = "",
             "chosen_title": title}
 
 
+def _sweep_outputs(today: str) -> None:
+    """Drop chat render folders older than `RETENTION_DAYS` (§14.13 answer 3).
+
+    At most once per process per day, and never today's folder. Only well-formed date
+    folders are considered, so the harnesses' own namespaces (`_control`) survive.
+    Deletion is safe under the render lock's callers because a folder this old cannot be
+    the one a live render is writing into."""
+    global _swept_on
+    if RETENTION_DAYS <= 0 or _swept_on == today or not OUT_ROOT.exists():
+        return
+    _swept_on = today
+    cutoff = date.fromisoformat(today) - timedelta(days=RETENTION_DAYS)
+    for d in OUT_ROOT.iterdir():
+        if not d.is_dir():
+            continue
+        try:
+            when = date.fromisoformat(d.name)
+        except ValueError:
+            continue                      # not a date folder — not ours to delete
+        if when < cutoff:
+            shutil.rmtree(d, ignore_errors=True)
+
+
 def _save_path(filename: str = "", day: Optional[str] = None) -> Path:
-    """`outputs/chat/<YYYY-MM-DD>/<name>.png` — the chat lane's own namespace.
+    """`outputs/chat/<YYYY-MM-DD>/<name>-<token>.png` — the chat lane's own namespace.
 
     Never a `data/backfill_*/renders/` path and never `MMDDYYYY/<release_slug>/`:
     the two lanes must not share an output namespace, or a chat experiment can
-    overwrite a shipped daily render."""
+    overwrite a shipped daily render.
+
+    The `-<token>` suffix is what makes the path safe under concurrent callers (§14.5).
+    `render` writes the PNG and `server.render_chart` then reads it back to build the
+    image content; with a fixed name — and the DEFAULT stem is fixed, `chart` — a second
+    call landing between those two steps hands one caller the other's chart. That is
+    reachable with one user, not only on a shared server, because Claude issues parallel
+    tool calls within a single turn."""
     day = day or date.today().isoformat()
     stem = Path(filename or "chart").stem or "chart"
     stem = "".join(ch for ch in stem if ch.isalnum() or ch in "-_") or "chart"
     out = OUT_ROOT / day
     out.mkdir(parents=True, exist_ok=True)
-    return out / f"{stem}.png"
+    _sweep_outputs(day)
+    return out / f"{stem}-{uuid.uuid4().hex[:8]}.png"
+
+
+def _close_figures() -> None:
+    """Reclaim the figure `render_row` leaves behind.
+
+    `render.render` returns `(fig, info)` and `render_row` keeps only `info`, but the
+    figure was created through `plt.subplots`, so pyplot holds a reference in its global
+    manager forever — roughly 1700x1220x4 bytes of Agg canvas per render plus the artist
+    tree. Under stdio that never mattered (a handful of charts, then the process exits);
+    a server leaks until it dies. `close("all")` rather than closing one figure because
+    the lane process holds no figures for any other purpose, and it is called under the
+    render lock so it can never reach a figure another thread is still drawing."""
+    import matplotlib.pyplot as plt
+    plt.close("all")
 
 
 def render(series: list[dict], *, filename: str = "", **row_kw) -> dict:
@@ -266,13 +344,42 @@ def render(series: list[dict], *, filename: str = "", **row_kw) -> dict:
     legends and a partially-resolved chart all raise inside the shared code, and those
     raises are the guardrails (§13.7) — swallowing one here would reintroduce exactly
     the silent-wrong class the daily lane spent months eliminating."""
+    global _last_render_finished
     row = build_row(series, **row_kw)
     path = _save_path(filename)
-    with quiet_stdout():
-        info = BC.render_row(row, str(path))
+    if not _RENDER_LOCK.acquire(timeout=RENDER_LOCK_TIMEOUT_S):
+        raise RuntimeError(
+            f"another render has held the renderer for over {RENDER_LOCK_TIMEOUT_S:.0f}s "
+            f"and has not returned. The usual cause is an expired Haver DLX sign-in: the "
+            f"pull is waiting on a login window that cannot be shown on this host. Sign "
+            f"in to DLX on the server and restart haver-chart.")
+    try:
+        try:
+            with quiet_stdout():
+                info = BC.render_row(row, str(path))
+        finally:
+            # In the `finally` so a raised guardrail does not also leak a half-built
+            # figure — the failing render is exactly the one most likely to be retried.
+            _close_figures()
+    finally:
+        _RENDER_LOCK.release()
+    _last_render_finished = datetime.now(timezone.utc).isoformat(timespec="seconds")
     return {"ok": True, "path": str(path), "plotted": list(info.get("plotted") or []),
             "end": info.get("end"), "row": row,
             "_drawn": info.get("drawn") or [], "_freq": info.get("common_freq")}
+
+
+def health() -> dict:
+    """Liveness that a wedged process cannot fake (§14.16).
+
+    A stuck render holds `_RENDER_LOCK` forever while the process keeps answering plain
+    HTTP, so "the server is up" is exactly the wrong question. Reporting whether the lock
+    is currently held, and when a render last COMPLETED, lets an uptime check tell a busy
+    server from a dead one."""
+    held = _RENDER_LOCK.locked()
+    return {"status": "ok", "rendering": held,
+            "last_render_finished": _last_render_finished,
+            "retention_days": RETENTION_DAYS}
 
 
 # ─────────────────────────────── validation ─────────────────────────────────

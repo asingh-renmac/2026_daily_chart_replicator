@@ -177,6 +177,42 @@ except ValueError as exc:
     check("area" in str(exc) and "stacked_bar" in str(exc),
           "an unrecognized plot_kind raises")
 
+print("\n9. Server-safety properties (§14.5)")
+# These are invisible on a short-lived stdio process and load-bearing on a long-lived
+# one. They are asserted here rather than only in the remote lane because the failure
+# they prevent — one caller receiving another caller's chart — is reachable with a
+# SINGLE user: Claude issues parallel tool calls within one turn.
+p1, p2 = lane._save_path("samename"), lane._save_path("samename")
+check(p1 != p2, "two renders of the same filename get different paths",
+      f"{p1.name} vs {p2.name}")
+check(p1.parent == p2.parent and p1.name.startswith("samename-"),
+      "the readable stem survives the uniqueness suffix", p1.name)
+
+import matplotlib.pyplot as plt  # noqa: E402
+
+check(not plt.get_fignums(), "no matplotlib figures left open after the renders above",
+      f"open figure ids: {plt.get_fignums()}" if plt.get_fignums() else "pyplot is clean")
+
+check(isinstance(getattr(lane, "_RENDER_LOCK", None), type(__import__("threading").Lock())),
+      "renders are serialized by a process-wide lock")
+
+# The sweep deletes directories, so prove BOTH halves: it removes what it should and
+# leaves alone what it must (the harnesses keep `_control` beside the date folders).
+old = lane.OUT_ROOT / "1999-01-01"
+keep = lane.OUT_ROOT / "_selftest_keep"
+try:
+    old.mkdir(parents=True, exist_ok=True)
+    (old / "stale.txt").write_text("x", encoding="utf-8")
+    keep.mkdir(parents=True, exist_ok=True)
+    lane._swept_on = None                      # force a sweep in this process
+    lane._sweep_outputs(__import__("datetime").date.today().isoformat())
+    check(not old.exists(), "retention sweep drops folders past the cutoff",
+          f"RETENTION_DAYS={lane.RETENTION_DAYS}")
+    check(keep.exists(), "retention sweep leaves non-date folders alone", keep.name)
+finally:
+    __import__("shutil").rmtree(keep, ignore_errors=True)
+    __import__("shutil").rmtree(old, ignore_errors=True)
+
 n_bad = sum(1 for ok, _, _ in _RESULTS if not ok)
 print("\n" + "=" * 78)
 print(f"{len(_RESULTS) - n_bad}/{len(_RESULTS)} checks passed"

@@ -1,11 +1,17 @@
-"""Local stdio FastMCP server — the chat lane for RenMac chart reconstruction (§13).
+"""FastMCP server — the chat lane for RenMac chart reconstruction (§13, §14).
 
-Two tools that wrap this repo's existing chart pipeline so Claude Desktop can drive it
-from a pasted Haver screenshot. No chart logic lives here; see `lane.py`.
+Two tools that wrap this repo's existing chart pipeline so Claude can drive it from a
+pasted Haver screenshot. No chart logic lives here; see `lane.py`.
 
-Run with the shared venv (it has matplotlib, pandas, Haver and fastmcp):
+DEFAULT TRANSPORT IS STDIO. Run with the shared venv (it has matplotlib, pandas, Haver
+and fastmcp):
 
     C:/Users/asingh/envs/shared-3.10/Scripts/python.exe haver_chart/server.py
+
+Set `HAVER_CHART_HTTP=1` to serve Streamable HTTP on loopback behind Entra OAuth instead
+(§14.4), for a Windows host that has DLX. Keeping stdio the default is a hard invariant:
+every teammate zip already in the field spawns this file with no environment beyond the
+three path variables, and none of them may change behaviour.
 
 The rules below are duplicated into every tool docstring on purpose: a tool
 description is the ONLY guidance an MCP client loads automatically. A skill does
@@ -14,12 +20,25 @@ nothing until it is installed and a system prompt nothing until it is pasted.
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
+
+# On a laptop the three path variables arrive in the `env` block Claude Desktop injects
+# (written by `configure.py`). A server has no MCP client spawning it, so that mechanism
+# has no analogue and the environment has to come from a file instead (§14.8). Safe to
+# do unconditionally: `load_dotenv` does NOT override a variable already in the process,
+# so the injected block still wins on a teammate's machine and stdio is unchanged.
+# Absent `config/.env` is the normal case, not an error — `load_dotenv` just returns False.
+try:
+    from dotenv import load_dotenv             # noqa: E402
+    load_dotenv(_REPO_ROOT / "config" / ".env")
+except ImportError:                            # degrade, don't die: only the catalog needs it
+    print("[haver-chart] python-dotenv not installed; config/.env not read", file=sys.stderr)
 
 from fastmcp import FastMCP                       # noqa: E402
 from fastmcp.exceptions import ToolError          # noqa: E402
@@ -28,12 +47,74 @@ from fastmcp.utilities.types import Image         # noqa: E402
 
 from haver_chart import lane                      # noqa: E402
 
-# mask_error_details stays FALSE. The pipeline's raises ARE the product here — an
-# operator who sees "unmappable applied_transform 'Avg, % p.a.'" can restate the
-# transform, whereas a masked "tool failed" turns a precise guardrail into a dead end.
-# `lane.explain` carries that one step further: on an unmapped transform it appends the
-# wordings that ARE recognized, since the raise names only what it rejected.
-mcp = FastMCP("haver-chart")
+_TRUTHY = {"1", "true", "on", "yes"}
+
+# Transport switch, read once at import (§14.4a). Unset = stdio = today's behaviour.
+HTTP_ENABLED = os.environ.get("HAVER_CHART_HTTP", "").lower() in _TRUTHY
+
+
+def _build_auth():
+    """Entra OAuth for HTTP mode, or None for stdio (§14.7).
+
+    Claude's custom connector brokers the connection through Anthropic's cloud and
+    requires OAuth 2.1 with Dynamic Client Registration and PKCE. Entra does not
+    implement DCR, so `AzureProvider` is an OAuth *proxy*: it presents DCR to Claude
+    while using one fixed app registration upstream. That is why a bearer token is not
+    an option here.
+
+    Fails fast on a missing secret. A server that came up unauthenticated on a port a
+    tunnel is about to publish is worse than one that refuses to start, and the DLX
+    entitlement behind it belongs to one licensed user (§14.7).
+
+    Own variable names rather than the metadata server's bare `AZURE_*`: each server
+    needs its own app registration because the redirect URI differs, so two servers on
+    one host would collide.
+    """
+    if not HTTP_ENABLED:
+        return None
+    from fastmcp.server.auth.providers.azure import AzureProvider
+
+    required = ("HAVER_CHART_AZURE_CLIENT_ID", "HAVER_CHART_AZURE_TENANT_ID",
+                "HAVER_CHART_AZURE_CLIENT_SECRET", "HAVER_CHART_PUBLIC_URL",
+                "HAVER_CHART_JWT_SIGNING_KEY")
+    missing = [n for n in required if not os.environ.get(n)]
+    if missing:
+        raise RuntimeError(
+            "HAVER_CHART_HTTP is set but these required env vars are missing: "
+            + ", ".join(missing))
+    return AzureProvider(
+        client_id=os.environ["HAVER_CHART_AZURE_CLIENT_ID"],
+        client_secret=os.environ["HAVER_CHART_AZURE_CLIENT_SECRET"],
+        tenant_id=os.environ["HAVER_CHART_AZURE_TENANT_ID"],
+        base_url=os.environ["HAVER_CHART_PUBLIC_URL"],
+        required_scopes=["read"],
+        # Fixed so FastMCP-issued tokens survive a restart and a teammate is not sent
+        # back through the browser sign-in every time the service recycles.
+        jwt_signing_key=os.environ["HAVER_CHART_JWT_SIGNING_KEY"],
+    )
+
+
+# mask_error_details is FALSE on stdio and TRUE over HTTP, and the reasoning that made it
+# False still holds. The pipeline's raises ARE the product — an operator who sees
+# "unmappable applied_transform 'Avg, % p.a.'" can restate the transform, whereas a masked
+# "tool failed" turns a precise guardrail into a dead end. Masking does not touch that:
+# every intentional guardrail reaches the client as ToolError(lane.explain(...)), and
+# FastMCP passes ToolError messages through regardless. What masking suppresses is the
+# UNINTENTIONAL exception — a stack trace, a C:\Users\... path, a psycopg error carrying a
+# connection string. On stdio those went to one trusted local operator; on a public
+# endpoint they are a leak (§14.4c).
+mcp = FastMCP("haver-chart", mask_error_details=HTTP_ENABLED, auth=_build_auth())
+
+
+@mcp.custom_route("/health", methods=["GET"])
+async def health(request):
+    """Unauthenticated liveness for the tunnel and uptime checks. No DB, no DLX.
+
+    Reports render liveness, not just process liveness: a render stuck on the DLX login
+    modal (§14.16) holds the lock forever while the process happily keeps answering HTTP,
+    so a plain 200 is exactly how that failure would hide."""
+    from starlette.responses import JSONResponse
+    return JSONResponse(lane.health())
 
 
 @mcp.tool
@@ -151,7 +232,9 @@ def render_chart(
     unmapped transforms all raise for the same reason: a wrong chart that looks right is
     worse than no chart.
 
-    Writes to `outputs/chat/<date>/`. Never touches the daily lane's renders or ledger.
+    Never touches the daily lane's renders or ledger. On stdio the result carries the
+    PNG's `path` on this machine; over HTTP it carries a `chart_id` instead, because the
+    file is on the server and a path would be meaningless to the person reading it.
     """
     try:
         out = lane.render(
@@ -168,10 +251,27 @@ def render_chart(
     # content) while Claude needs the path and the plotted labels (structured
     # content). Returning a bare list makes FastMCP infer an output schema and then
     # reject the mixed image/data payload against it.
-    summary = {"path": out["path"], "plotted": out["plotted"], "end": out["end"]}
+    summary = {"plotted": out["plotted"], "end": out["end"]}
+    # A server-local absolute Windows path is worse than useless to a remote caller: the
+    # model will cheerfully tell a phone user their chart is at C:\Users\... . The image
+    # itself is inline base64, so nothing is lost by withholding it (§14.4e).
+    if HTTP_ENABLED:
+        summary["chart_id"] = Path(out["path"]).stem
+    else:
+        summary["path"] = out["path"]
     return ToolResult(content=[Image(path=out["path"]).to_image_content()],
                       structured_content=summary)
 
 
 if __name__ == "__main__":
-    mcp.run()
+    if HTTP_ENABLED:
+        # Loopback ONLY. cloudflared is the public edge (§14.6); uvicorn must never be
+        # the thing facing the internet. Port 8100 rather than 8000 so a host can
+        # eventually run this and haver-data side by side without a clash.
+        port = int(os.environ.get("HAVER_CHART_HTTP_PORT", "8100"))
+        print(f"[haver-chart] Streamable HTTP on 127.0.0.1:{port} "
+              f"(auth: Entra, public base {os.environ['HAVER_CHART_PUBLIC_URL']})",
+              file=sys.stderr)
+        mcp.run(transport="http", host="127.0.0.1", port=port)
+    else:
+        mcp.run()

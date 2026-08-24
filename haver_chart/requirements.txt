@@ -6,8 +6,11 @@
 # module, the Neon catalog credential, and the ratified knowledge stores. See the
 # "Sharing this with teammates" section of SETUP.md.
 
-# The MCP surface.
-fastmcp==3.4.7
+# The MCP surface. The `azure` extra (azure-identity + pyjwt) is only used by the remote
+# HTTP mode's Entra OAuth (§14.4b); it is a few hundred KB and pulling it unconditionally
+# keeps ONE requirements file for both transports, so a host cannot be one pip install
+# short of the mode it was asked to run in.
+fastmcp[azure]==3.4.7
 
 # The chart pipeline.
 matplotlib==3.10.8
