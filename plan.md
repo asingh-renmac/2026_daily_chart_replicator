@@ -858,6 +858,7 @@ acts only on non-terminal rows (resume-safe).
 | G7 | **BUILT + OFFLINE-PROVEN** (`scripts/g7_run.py`): two-invocation, kill/restart between runs (separate processes; only the CSV ledger persists). `selftest` runs reset→run→reply→run→assert as fresh processes with the stub transport — **all six assertions PASS**: (1) RUN-1 ingests, posts one ticker ask each for sample1_chart3 + sample9_chart1 and one title round-trip for sample2_chart2, none for the pre-approved jolts chart; (2) idempotency — jolts renders in RUN-1, its PNG predates the RUN-2 renders (not re-rendered); (3) clean resume — sample1_chart3 ticker (`pa413121@usecon`) + sample2_chart2 title (opt 2) answered between runs complete in RUN-2; (4) partial-chart integrity — sample9_chart1 left unanswered stays `awaiting_ticker` with **zero PNG** (resolved sibling never rendered alone); (5) no duplicate post — exactly one post per asked chart, none re-posted in RUN-2 (cursor/post-once guard); (6) ledger is source of truth — resume reconstructs from CSV alone. Live mode (`G7_TRANSPORT=graph`) is the SAME code against `GraphTransport`; confirm_ticker (Haver) + propose_titles (Opus) already proven live (g5_wire_check). **FRONT HALF (real inbox):** `scripts/run_daily.py --date YYYY-MM-DD` adds date-scoped Mail.Read ingestion (`src/ingest.py` — Eastern-zoneinfo window, server-side `$filter`+paging, resilient extract/classify, EMF→Teams), seeding a SEPARATE `data/ledger_backfill_<date>.csv` (idempotent; `--reprocess` redo). Offline-proven via `--selftest` (§3.4). First live target 2026-06-25. **REMAINING = the live Graph round-trip + the live Mail.Read read**, after consent + `AS_TEAMS_CHAT_ID`. Live G7 order: `reset` → `run` → reply in Teams (tag `[chart_id]`, leave sample9 unanswered) → `run` → `assert`. **BLOCKED 2026-06-28 — one-time admin consent (RenMac org policy):** the device-code `consent` step returns "Need admin approval" even though all 4 delegated scopes show "Admin consent required: No" in the portal — RenMac has **tenant-wide user consent disabled** (org policy, not a scope/config bug; scopes remain minimal, no `.All`). Unblock = a one-time tenant grant by an Entra admin via `https://login.microsoftonline.com/<AS_TEAMS_TENANT_ID>/adminconsent?client_id=<AS_TEAMS_CLIENT_ID>` (or portal **API permissions → Grant admin consent for RenMac**). It's a persistent tenant `oauth2PermissionGrant`, **not per-sign-in**: after it lands, `consent → list-chats → check → --approve` proceed with no further admin involvement (re-grant only on new scopes or revocation). `list-chats`/`check`/live `--approve` held until then. | **offline-proven; live Graph BLOCKED on one-time admin consent (org policy); live Mail.Read pending** |
 | **G8** | **Chart-field read (Opus vision) — THE CORE INTELLIGENCE.** Two stages, inverted flow (vision produces descriptions → resolver confirms → human only on genuine ambiguity). **CONFIRMED design (2026-06-29):** **Stage 1 vision read** (`src/chartspec.py`, Opus, headless) → `ChartSpec`: per series {description, raw Haver FORMULA if shown, ticker_read (mnemonic from formula), transform (if words-only), axis L/R/shared, bracket lag `[-n]`, SA/NSA + base hint, legend, confidence} + chart-level {n_series, axis_mode, sample_range, units, recession_shading}. The read IS the formula string — it feeds the G3 `transforms.py` parser directly. **Stage 2 resolution = Model A:** formula-embedded mnemonic → DLX `get_series` confirm + **cross-check freq/SA vs the read** (headless, auto-bind only on match); description-only series → park to Teams with real desc+candidates (per-series slot). `search_series`/`get_series` are the **authoring-time MCP** (I use them to build candidates + the field battery), NOT headless — resolver is dependency-injected so production stays DLX-only. **Read is a HYPOTHESIS; nothing binds until the `get_series` cross-check passes** (mismatch → fail-loud Teams, never silent-bind). **Ledger schema change:** N per-series slots (each independently pending/resolved/skipped) replace the single placeholder; Defect-2 holds (any pending slot → whole chart parked, renders nothing). **G8a BUILT + run (`scripts/g8_read_battery.py`):** vision read over 22 raw-Haver charts (14 loose + 7 docx + texas_mfg_outlook) → **22/22 read, 0 errors, 43 series (10 formula/DLX-confirm, 33 description-only)**; formula reads match G4-pinned mnemonics (NMSCNX/NMOCNX, JCSRM/JCSXEHM/JCGXFEM, YCP), JOLTS `[-4]` lag caught. **G8a v2 re-read after Aman's 4 corrections:** (1) `axis_mode` now DERIVED from L/R numeric tick ranges (n_series≤1 or equal ranges→shared; differ→dual) — 6 dual/16 shared, single-series impossibles fixed; (2) non-forecast x-axis END = `derive_at_pull` (impossible 2027–2031 ends gone), Stage-1 reads start + `has_forecast` only; (3) sum formulas captured whole (ticker_read demoted to advisory; G8b walks the G3 parser to confirm every addend); (4) `base_descriptor`/`applied_transform` split + `native_ma_ambiguous` flag (Wage-Growth-Tracker 3-mo-MA flagged → bot). Residual: right-axis tick read can copy the left (e.g. sample6_chart2 reads shared but is dual) → Aman's `corrections.json` axis_mode override settles it. Correction schema + template at `outputs/g8/corrections.template.json` (override-only: axis_mode/sample_start chart-level; ticker/axis/native_ma per series); battery scores read-vs-truth when `corrections.json` present (`--from-cache` scores the reviewed reads deterministically). **SCORED vs Aman's ground-truth key: 11/11 fields match (100%)** — axis_mode/axis/native-MA all correct on texas + sample6_chart2 (truth=shared, model right) + sample2_chart3 (native-MA both ways) + JOLTS; description-only tickers (DFBACTS/DBACTS@SURVEYS, FFEDTAR, WGTO, PCUSERH, LJQTPA/LSWP@USECON) are Stage-2 fills, vision correctly didn't fabricate. **G8b clarified-knowledge store = `knowledge_repo/clarified-knowledge/` (JSON keyed by descriptor)** for native-MA-vs-applied confirmations (write-once, never re-ask). **G8a SIGNED 2026-06-29.** **G8b BUILT + OFFLINE-PROVEN (`scripts/g8b_demo.py`, 15/15 checks):** Stage-2 resolver `resolve.py` (`build_slots`→N per-series slots; `resolve_slot`/`resolve_chart`; `chart_status_from_slots`) — **(1) formula path** walks the G3 parser (`transforms.formula_mnemonics`) and confirms EVERY mnemonic (sum BEEM1+BEEM2+BEEM3 → all 3 bound; any unconfirmed addend → parked, never silent-binds); **(2) description path** searches→confirms→**SA cross-checks** (`sa_matches`: read sa_hint vs `get_meta`; wrong-SA candidate rejected) → auto-binds only on a single confident match, else parks with candidates; **(3) native-MA** consults the clarified store (`load_clarified`/`save_clarified` at `knowledge_repo/clarified-knowledge/native_ma.json`; WGTO seeded) → auto-binds if known, else parks `needs_clarification`. `_qualify` attaches `@db` to bare formula mnemonics via `trusted_tickers.json` (human-confirmed: YPWM/YCP/PA413121/FFEDTAR/WGTO/PCUSERH/LJQTPA/LSWP@…, DFBACTS/DBACTS@SURVEYS) then search. **Ledger:** new JSON cols `chart_spec` + `series` (N slots, each pending/resolved/skipped) + `ask_sig`; `sync_row_from_slots` rolls slots up (RESOLVED only when EVERY slot bound — Defect 2). **Per-slot Teams round-trip** `approval.run_series_roundtrip` + `teams.format_series_ask`/`parse_series_reply` (`[chart_id]` + per-line `#idx` routing; bare codes fill pending ticker slots in order — the texas "two tickers line-by-line" case; native-MA clarify→persist→re-resolve→re-ask on changed signature; `skip` drops whole chart; post-once per signature). Resolver/transport fully dependency-injected (offline stubs; MCP=authoring, DLX=runtime). Legacy single-slot lane (g5/g7) untouched — both still green. **G8a REOPENED 2026-06-30 for the FREQUENCY field (Aman):** frequency is a DEFINING attribute (same tier as SA) — a monthly description resolving to a same-named QUARTERLY series passes the SA check and would silent-bind wrong. Added one-field per-series `freq_hint` to Stage 1 (`chartspec.py` prompt + `SeriesSpec`) and `resolve.freq_matches` folded into BOTH resolver paths via `_meta_reject` (read-freq vs `get_meta` freq; mismatch → park, exactly like SA; unknown either side → skip). **Park-safe by construction:** a wrong freq read can only cause an EXTRA park (human exception path), never a confident wrong-bind. Re-ran the live battery: **22/22 read, 0 errors, the 11 previously-grounded fields still 100% (no regression)**; `g8b_demo` freq-mismatch branch added (16/16). **Read-accuracy note (for the freq ground-truth pass):** 2 likely freq misses on formula/abbreviated series with no freq cue — `YCP` (corp profits, quarterly) read monthly; `FFEDTAR` (Fed Funds target, monthly in USECON) read daily — both would PARK (safe), not bind wrong. **G8a freq scored vs Aman's `corrections.json` (`--from-cache`): 20/23 (87%)** — all 11 hard fields still 100%; 3 freq misses all on no-cadence-cue series (Fed Funds EOP read daily; CEO Bus Conf read quarterly; YCP read monthly), every one PARK-safe. **G8a PARTIAL-SIGNED 2026-06-30:** 11 hard fields + non-ambiguous freq + texas clean; ambiguous-series freq explicitly ADVISORY. **FREQ REFRAME (Aman, the right reason — not fewer parks):** freq-of-record = `get_meta` (authoritative), vision `freq_hint` advisory. A park must fire on REAL ambiguity (no cadence cue→multiple candidates, EOP-vs-AVG, SA-undetermined), NOT on a spurious read-vs-meta freq mismatch the metadata resolves. Implemented in `resolve.py`: freq REMOVED from `_meta_reject` (never rejects); `meta_freq`/`freq_advisory_mismatch` record `freq_resolved` (authoritative) + a diagnostic flag on bind; genuine freq ambiguity (two same-named series at different freqs) is caught by CANDIDATE COUNT, not the advisory read. **AGGREGATION cross-check ADDED (Aman, Fed Funds EOP):** "EOP"/"AVG" in a descriptor is a RESOLUTION CONSTRAINT — confirmed `get_series` exposes **`agg_type`** (FFEDTARE@USECON=EOP vs FFEDTAR@USECON=AVG, both Monthly, same name → aggregation is the ONLY distinguisher). `agg_matches` is a HARD reject like SA (EOP/AVG cue must match `agg_type`; unconfirmable agg under a cue → park). Tight cue detection guards against "Moving Average"/"3-Mo Mov Avg" false positives (a transform, not an aggregation). Seed fixed: `trusted_tickers.json` Fed Funds → `FFEDTARE@USECON` (EOP, mnemonic-honest key). `g8b_demo` extended: E2 (freq advisory → single match BINDS on get_meta freq, flags mismatch), E3 (EOP cue binds FFEDTARE, rejects FFEDTAR AVG), E3b (no cue → both confirm → REAL ambiguity → park) — **18/18**. **G8c LIVE RESOLUTION run + STOPPED before render (`scripts/g8c_texas.py`, seed bypassed trusted={}):** three live surfaces exercised — `search_series` (MCP), `get_series` (MCP), `confirm` (Haver DLX, live). **KEY FINDING — search-recall miss, NOT a read or cross-check failure:** both `DFBACTS`/`DBACTS@SURVEYS` EXIST with descriptors that EXACTLY match the vision read (get_series: "Texas Mfg Outlook Survey: General Business Activity[, 6 Months Ahead] (SA, %Bal)", M, SA, AVG, Dallas Fed, 2004→2026, 264 obs), BUT `search_series` on the chart's description does NOT surface them — it returns global S&P PMI "Business Outlook" + NY/Philly Fed survey series (the colon-structured Haver descriptor + "Mfg" abbrev + generic "General Business Activity" out-rank the exact Texas match). **The resolver PARKED both series (safe): every live candidate is NSA, the SA cross-check rejected all → no confident match → park to Teams (no mis-bind).** The get_series cross-check on the human-supplied truth tickers confirms an EXACT match to the read (freq/SA/descriptor all OK). **TWO HARDENINGS surfaced (held for review, not yet built):** (1) **search recall** — verbatim Haver descriptors resolve poorly; need better query construction (DB-scoped/`surveys`, source/geography hints, or fuzzy-code) or the live path parks nearly everything; (2) **descriptor-relevance gate** — the description path currently binds on "single confident match" with NO check that the candidate's descriptor matches the read; here SA saved it, but a lone wrong-SA-passing candidate could mis-bind — bind should require descriptor similarity, not just confirm+SA+agg+count. **HARD STOP held — no render, no run_daily wiring.** **G8c-v2 — both hardenings BUILT + confirm_all mode added (2026-06-30):** **Part 1A descriptor-relevance gate** (`resolve.descriptor_similarity`/`descriptor_exact`, `_descr_tokens` with abbrev expansion + unit/stop drop): the description path NEVER binds on confirm+SA+agg+count alone — it requires the candidate's `get_series` descriptor to MATCH the read. Primary signal = EXACT normalized token-set equality (the only thing that separates a headline series from its near-identical directional siblings — "General Business Activity" vs "…: Worsened", one extra token Jaccard can't resolve); fallback = Jaccard ≥0.5 with a ≥0.15 margin over the runner-up. Below threshold → NON-bind even if it's the only candidate (every recall failure is a non-bind, never a wrong-bind). **Part 1B search recall** (`build_search_attempts`): DB-scope by keyword heuristic (surveys), issue 3 query VARIANTS per slot (verbatim, geography-lead + after-colon discriminator, discriminator alone) whose hits are UNIONED — recall up, precision from the gate. **Part 2 `resolution_mode` = confirm_all** (NEW, production default; `selective_park` PRESERVED + still green): nothing renders until the human ratifies — every chart posts ONE Teams summary with its FULL resolved set (`teams.format_resolution_summary`: per-series code@db/transform/axis/lag/freq + chart sample-range/axis_mode/recession), `approval.run_resolution_roundtrip` gates RESOLVED→AWAITING_RESOLUTION→(approve)→RESOLUTION_APPROVED; reply `[id] approve` / `[id] 1=CODE@DB 2:axis=R …` / `[id] skip` (`parse_resolution_reply`). **Part 3 titles = SEPARATE round-trip AFTER resolution approve** (`run_title_roundtrip(from_status=RESOLUTION_APPROVED, gate_status=AWAITING_TITLE, parser=parse_title_reply)`: approve/1/2/title=/subtitle=); renders ONLY after BOTH approves. **Part 4 learning store** (`learned_descriptors.json` desc→code + `save_trusted` mnemonic→code, written on approve; `load_learned` fast-path re-confirms+cross-checks before binding) + approve-without-correction metric logged. `g8b_demo` extended to a token-overlap CATALOG search (exercises recall+gate) + confirm_all branches → **29/29**; g5/g7 selective_park regression green. **Part 5 LIVE texas re-run (`scripts/g8c_texas.py`, confirm_all, seed bypassed trusted={} learned={}, live-captured search_series + live DLX confirm):** the multi-query union surfaced BOTH truth tickers (notably the VERBATIM query alone did NOT return them — the geography+discriminator variant did); **every one of the ~42 surviving candidates is SA, so the SA check disambiguated NOTHING — the relevance gate was the SOLE safety**, and EXACT-set match bound `DFBACTS@SURVEYS` (S0, over directional siblings at sim 0.909) and `DBACTS@SURVEYS` (S1) — **RESOLVED 2/2 LIVE, no seed, no park**; live DLX `confirm_ticker` exists=True for both, matching `corrections.json`. confirm_all POSTED the full resolution summary and **HELD at AWAITING_RESOLUTION** (Part-5 STOP step 2) — no approve, no title, no render. **LIVE PROOF the exact-token-set gate is the safety floor (2026-06-30, Aman-confirmed at approve):** for S0 the directional sibling `DFBACTDS@SURVEYS` ("…General Business Activity, 6 Months Ahead: **Worsened**") scored **Jaccard 0.909** — i.e. *similarity alone would have bound the WRONG directional decomposition* (0.909 ≫ any reasonable threshold). Only the EXACT normalized token-set match separated the headline `DFBACTS` (which equals the read token-set) from `DFBACTDS` (one extra token, "worsened"). With every candidate SA, neither SA/agg/freq nor a fuzzy-similarity score would have caught it — exact-set is the floor, not a nicety. **Aman APPROVED the texas resolution 2026-06-30** (`[texas_mfg_outlook] approve`) → flows to title round-trip → render-over-original (x-scale overlay, both lines, shared axis, recession months, derived end) for review. **Render done** (`scripts/g8c_render.py`): approve→RESOLUTION_APPROVED (learning store written: both Texas descriptions in `learned_descriptors.json`; approve-without-correction metric logged)→title round-trip posted 2 Opus options (held at AWAITING_TITLE for Aman's pick)→LIVE DLX pull of DFBACTS/DBACTS/RECESSM2→`outputs/g8c/texas_overlay.png` (recon tracks both original lines, shared −75..75, RECESSM2 spans on GFC trough + COVID spike) and `outputs/g8c/texas_reconstruction.png` (RenMac, derived end **2026-06** not the read's "25"). Title is provisional (option 1) pending Aman's `[texas_mfg_outlook] 1/2/title=…`.
 | **G9** | **Chat lane (§13) — the same intelligence driven from Claude Desktop instead of email+Teams.** Two MCP tools (`resolve_series`, `render_chart`) wrapping `resolve.py` + `build_chart.render_row`; ingest/classify/ledger/Teams/propose replaced by the conversation. Closes the **render-preview gate** by construction (the operator sees the pixels before use), which is the open blocker to headless on the daily lane. Learning stores READ-ONLY from this lane in v1 (an unratified chat bind must not poison what `run_daily` trusts — the `mpcuhsro` class with a new entry point). No changes to the `run_daily` chain. **G9a SIGNED 2026-08-20. G9b BUILT + PROVEN the same day** (`haver_chart/`: `server.py` the two-tool FastMCP surface, `lane.py` the translation layer, `bootstrap.py` the boundary enforcement, plus `selftest.py`/`SETUP.md`/`SKILL.md`/`SYSTEM_PROMPT.md`). **Lane equivalence 6/6** (`scripts/g9b_lane_equivalence.py` over `ledger_backfill_2026-08-11`): 4 charts pixel-identical to the archived daily PNGs; `_1`/`_2` differed only because WTI and the 2Y yield have printed new observations since 2026-08-11 — against a same-vintage daily re-render both are pixel-identical, so the harness now renders that control automatically and reports vintage-vs-wrapper explicitly. **Philly Fed target rendered from resolution alone** (`scripts/g9b_philly.py`): `zs(yryr%(IP))`→`ip@ip` via the formula path, Philly Fed diffusion index→`bocgx@surveys` on an EXACT token-set match at sim 1.0 over two 0.8 siblings; `validate.check_last_value` PASS on both lines (IP 0.0397, Philly 2.4614 vs 2.4 read off the source). **Daily lane green in the same commit:** `selftest_workflow` 254/254, `selftest_transforms` 43/43. Read-only enforced by a tripwire, not a convention: `bootstrap.seal_stores` replaces every `resolve.save_*` with a raiser in this process, and `selftest.py` (19/19 at G9b, 28/28 after the §13.12 answers, 31/31 after G9e step 1) asserts both that the savers raise and that no daily-lane-only module is importable from the lane. **One additive change to a shared module**, per §13.5: `render_row` now also returns `drawn`/`window`/`common_freq` so `check_last_value` can run on the data BEHIND the pixels instead of a re-derivation (a window-ZS re-evaluated over a different window is a different number). Existing callers read named keys and are unaffected. **G9d + G9e CLOSED the same day (§13.14):** the store seal is permanent, not v1 — ratification lives in the daily approval round, and a shared store N teammates can write is the `mpcuhsro` class with N entry points. Because no consumer can write, a copy can only go STALE, never WRONG, which is what makes plain file distribution sound. The four stores publish to `P:\Public\RenMac_Chart_Knowledge` automatically at the end of every `run_daily` path that can write one (`--approve`/`--retitle`/`--relegend`) — last and fail-soft, so an unmapped drive warns instead of failing a finished day. `scripts/build_teammate_package.py` ships `dist/haver-chart-<sha>-<date>.zip` built from `git ls-tree HEAD` (so `notes/`/`data/`/`outputs/` cannot ride along) with the style and catalog modules vendored and no credential inside; `configure.py` generates the teammate's Claude config rather than having them hand-edit absolute paths. Proven from a clean unzip: 31/31 with a real RenMac-styled render. | **G9a SIGNED; G9b BUILT + PROVEN; G9d DECIDED (no writes, permanent); G9e DONE (zip proven from clean unzip) — all 2026-08-20. G9c (live chat run) is Aman's** |
+| **G10** | **Remote lane (§14) — the SAME two tools served over Streamable HTTP from a Windows host that has DLX, behind Entra sign-in, registered in Claude as a custom connector.** What it buys is one thing: the chart lane stops requiring the operator's machine, so `claude.ai` and mobile work with no local Python and no local DLX. Transport changes; nothing else does. The pilot host is the **Azure AVD** session host — deliberately a test bed and not a destination (an AVD signs out on an idle policy and a pooled host discards the install, so "always on" is not a setting it has). It is there to answer the one question nothing else can answer cheaply: **does DLX serve a non-interactive caller, and does it survive a disconnected session?** The G9e teammate zip is already the deployment artefact — every external path is an env var and the style + catalog modules are vendored, so installing the lane on a server is an unzip. Four latent defects that stdio hid must be fixed first, and three of them bite with a **single** user because Claude issues parallel tool calls: the output filename collides (`lane._save_path` → `<stem>.png`, and the render-then-read-back gap can hand caller A caller B's chart), the figure is never closed (unbounded leak in a long-lived process), pyplot global state races, and `haver_search._READY` latches dark forever on one transient failure. The first three are fixed **inside the lane** (a `threading.Lock` around `render_row` plus `plt.close("all")`), so the daily lane's render path stays byte-for-byte untouched. Edge is a **Cloudflare named tunnel** onto `chart.hvr-mcp.work` — outbound-only, so no inbound port and no firewall change on a managed desktop. Auth is the metadata server's `AzureProvider` recipe with its own app registration; `mask_error_details` flips to TRUE in HTTP mode only (the guardrails already reach the client as `ToolError` and pass through masking — what masking stops is an accidental stack trace leaking a path or a connection string on a public endpoint). **The Entra assignment list is the licence boundary, not just access control:** `Haver.direct("on")` runs under the server account's entitlement, so the pilot assigns exactly one person — one user, one DLX, his own licence, reached through a different door — and G10h makes adding a second name a hard stop pending written confirmation from Haver. **G10c + G10d PASSED 2026-08-23** (§14.15, §14.17). Phase 1: the four fixes landed, three inside the lane so the daily render path is byte-for-byte unchanged. Phase 2: `HAVER_CHART_HTTP=1` serves Streamable HTTP on loopback behind Entra, stdio unchanged and proven by a real JSON-RPC handshake, `/mcp` 401 unauthenticated. **G10b findings (§14.16):** DLX serves a non-interactive caller with the desktop app CLOSED — it needs the credential, not the window — but an EXPIRED credential raises a GUI login modal, so the un-credentialed path blocks rather than fails, and a blocked pull inside the render lock would wedge every later render; hence the lock timeout and render-liveness `/health`. Green in the same commit: selftest 37/37, g10d 8/8, workflow 254/254, transforms 43/43, `run_daily --selftest` ALL PASS, lane equivalence 6/6. **Next: G10e (tunnel + Entra registration).** |
 
 ### G8c recall/park breakdown — the description-only set (2026-06-30, seed AND learned bypassed)
 
@@ -1433,3 +1434,764 @@ are variable names and a placeholder. Daily lane green in the same commit:
 `selftest_workflow` 254/254, `selftest_transforms` 43/43, `run_daily --selftest` ALL PASS.
 The live publish moved 274 entries across the four stores, and a reader pointed at the
 share returns all of them; the fail-soft path was tested against an unmapped `Z:`.
+
+---
+
+## §14. Remote lane — `haver-chart` over HTTPS from a Windows host (PROPOSAL)
+
+### 14.1 What this is, and the one thing it buys
+
+§13 put the chart pipeline behind Claude Desktop over **stdio**. Stdio means the client
+*spawns the server as a local process*, which has one consequence that governs
+everything below: the lane only exists on a machine that has Claude Desktop, a Python
+environment, and a licensed DLX install. `claude.ai` in a browser cannot spawn a local
+process. Neither can the phone. So today the answer to "rebuild this chart" is always
+"open your laptop".
+
+This section proposes serving the **same two tools** over **Streamable HTTP** from a
+Windows machine that has DLX, behind TLS and Microsoft Entra sign-in, registered in
+Claude as a **custom connector**. That is exactly the shape `haver-metadata` already
+runs in (2026_haver_mcp §14), and the pattern is proven in production against
+`hvr-mcp.work`.
+
+The one thing it buys: **the chart lane stops requiring the operator's machine.** Paste
+a Haver screenshot into Claude on a phone, get a RenMac render back. No local Python, no
+local DLX, no Claude Desktop.
+
+What it does *not* buy is a second lane. There is no new chart logic, no new tool, no new
+vocabulary. The transport changes and nothing else does.
+
+### 14.2 Why the AVD is the test bed and not the destination
+
+Aman has DLX installed on an Azure Virtual Desktop Windows session host. That machine is
+the cheapest possible way to answer the questions that actually carry risk, and it should
+be used for exactly that and then retired from the design.
+
+**What the AVD can prove, and nothing else can prove without spending money:**
+
+- That `Haver.direct("on")` works from a **non-interactive** caller on a server-class
+  Windows host — i.e. that DLX serves a background process, not just the desktop app in
+  front of a logged-in human. This is the single largest unknown in the whole proposal.
+- That a DLX session **survives disconnect** (closing the remote-desktop window while the
+  session stays signed in), and how long it survives before 2FA or an idle policy kills
+  it.
+- That the transport swap, the Entra flow, and the Claude connector registration all work
+  end to end, against a real render.
+- That a chart rendered remotely is **pixel-identical** to the same chart rendered locally
+  — i.e. that HTTP changed the delivery and not the product.
+
+**Why it cannot be the destination.** An AVD session host is a desktop, not a service
+host. Three properties disqualify it: sessions sign out on the organisation's idle policy
+and take the server process with them; a pooled host with FSLogix discards anything
+installed outside the profile container on the next reboot; and it has no stable inbound
+identity, so "always on" is not a setting it has. If the pilot passes, production is a
+dedicated always-on Windows VM (§14.11 G10i) and the AVD work carries over unchanged —
+the artefacts are the same zip, the same env vars, the same tunnel config.
+
+Stating this now matters because the failure mode is building the pilot, liking it, and
+letting it become the production system by accident.
+
+### 14.3 What is reused unchanged
+
+Almost everything, and one item is a genuine windfall.
+
+**The G9e teammate package is already the deployment artefact.** §13.14 step 4 solved
+relocatability for a completely different reason — putting the lane on a colleague's
+laptop — and a server is just another machine that is not Aman's. `dist/haver-chart-<sha>-<date>.zip`
+already vendors `renmac_chart_style.py` and the three catalog modules, already drives
+every external path through `ECON_TEMPLATES_CHARTS` / `HAVER_MCP_SERVER` /
+`CLARIFIED_KNOWLEDGE_DIR`, and already ships a `selftest.py` that fails at pre-flight
+naming the variable to set. Installing the lane on the AVD is *unzip the package*. No
+four-repo checkout, no clone, no path surgery. This is the reason the pilot is days of
+work rather than weeks.
+
+Also unchanged and load-bearing:
+
+- **`bootstrap.seal_stores`.** The G9d decision that the chat lane never writes the
+  knowledge stores is what makes a shared server safe at all. A multi-caller server is
+  the strongest possible argument for that seal, not a reason to revisit it.
+- **The lane is stateless by decision** (§13.12 answer 1). No ledger, no session, no
+  cursor. There is nothing per-user to keep, so there is nothing per-user to get wrong.
+- **Matplotlib is already headless.** `matplotlib.use("Agg")` at `src/render.py:43`. No
+  display, no GUI, no interactive session required. This part of the migration is free.
+- **The image already travels inline.** `Image(path=...).to_image_content()` base64-encodes
+  the PNG into the JSON-RPC payload, which is transport-agnostic. Typical render is
+  100–205 KB, so ~135–275 KB on the wire. Nothing to change.
+- **Postgres is already connect-per-call** against Neon's pooled endpoint with no
+  module-level pool, so it is concurrency-safe by construction.
+- **`stdio` stays the default.** Hard invariant, mirroring `HAVER_HTTP` on the metadata
+  server: with the new variable unset, the process behaves exactly as it does today.
+  Every teammate zip already in the field keeps working, untouched.
+
+### 14.4 What actually changes — the transport swap
+
+Three edits to `haver_chart/server.py`, all additive, all inert when the switch is off.
+
+**(a) The transport flag and the run block.** Installed FastMCP is 3.4.7 and
+`run(transport=..., **kwargs)` is already in its signature, so this needs no dependency
+change:
+
+```python
+HTTP_ENABLED = os.environ.get("HAVER_CHART_HTTP", "").lower() in {"1", "true", "on", "yes"}
+...
+if __name__ == "__main__":
+    if HTTP_ENABLED:
+        # Loopback only. cloudflared is the edge; uvicorn is never publicly bound.
+        mcp.run(transport="http", host="127.0.0.1",
+                port=int(os.environ.get("HAVER_CHART_HTTP_PORT", "8100")))
+    else:
+        mcp.run()
+```
+
+Port **8100**, not 8000, so a box can eventually host both servers without a clash.
+
+**(b) `_build_auth()`,** copied from `2026_haver_mcp/server/server.py:53-86` with the env
+variables renamed. The rename is not cosmetic: each server needs its **own** Entra app
+registration because the redirect URI differs, so `AZURE_CLIENT_ID` cannot be shared
+between two servers on one host. Use `HAVER_CHART_AZURE_CLIENT_ID`,
+`HAVER_CHART_AZURE_TENANT_ID`, `HAVER_CHART_AZURE_CLIENT_SECRET`.
+
+Keep the **fail-fast** check verbatim. A missing secret must stop the process, never
+start it unauthenticated on a port that a tunnel is about to publish.
+
+**(c) `mask_error_details` becomes conditional — and this reverses today's comment.**
+`server.py:31-36` argues, correctly, that the pipeline's raises *are* the product: an
+operator who sees `unmappable applied_transform 'Avg, % p.a.'` can restate the transform.
+That reasoning holds for the intentional guardrails, which all reach the client as
+`ToolError(lane.explain(exc))` — and FastMCP passes `ToolError` messages through
+**regardless of masking**. What masking suppresses is the *unintentional* exception: a
+stack trace, a `C:\Users\asingh\...` path, a psycopg error carrying a connection string.
+On stdio those went to one trusted local operator. On a public endpoint they are a leak.
+So: `mask_error_details=HTTP_ENABLED`. Guardrails stay verbatim; accidents stop talking.
+
+**(d) A `/health` route** with no auth and no DB touch, for the tunnel and for uptime
+checks. Same three lines as the metadata server.
+
+**(e) `structured_content["path"]` stops making sense.** It is a server-local absolute
+Windows path. Remotely it is worse than useless: the model will cheerfully tell a phone
+user their chart is at `C:\Users\asingh\...`. In HTTP mode return `chart_id` instead. The
+image itself is inline, so nothing is lost. A served `/charts/{id}.png` URL is deliberately
+deferred (§14.13 Q4) — it needs its own auth story and buys little while the PNG already
+arrives in the message.
+
+### 14.5 Making the lane safe for a long-lived, multi-caller process
+
+Four defects that stdio hid. Every one of them is invisible when a process serves one
+operator for five minutes and then dies, and every one of them bites a server that stays
+up for weeks.
+
+**The important framing: three of the four bite with a *single* user.** Claude routinely
+issues parallel tool calls within one turn — "make me both charts" is two concurrent
+`render_chart` invocations — and FastMCP's HTTP transport runs sync tool functions in a
+thread pool. Concurrency is not a multi-tenancy problem here. It is a one-user problem.
+
+| # | Defect | Where | Fix |
+|---|---|---|---|
+| 1 | Output filename collides | `lane._save_path` writes `outputs/chat/<date>/<stem>.png`; `stem` defaults to `chart` | Unique suffix per call |
+| 2 | Figure never closed | `render.render()` returns `fig`; `build_chart.render_row:742` discards it; nothing calls `plt.close` | Close in the lane |
+| 3 | pyplot global state races | `plt.subplots()` at `render.py:295`, `plt.FuncFormatter` at `:145` | Serialize renders |
+| 4 | Catalog latches dark forever | `haver_search._READY` is a permanent tri-state latch | Re-check with a cooldown |
+
+**On #1** — the hazard is sharper than "two files with one name". `lane.render` writes the
+PNG and *then* `server.render_chart` reads it back through `Image(path=...)`. A second
+call landing between those two steps hands caller A caller B's chart. `outputs/chat/2026-08-21/chart.png`
+exists in the tree today, so the default stem is used in practice. Fix:
+`<stem>-<uuid4hex[:8]>.png`, keeping the readable stem. This costs disk on iteration (a
+retitle produces a new file rather than overwriting), which §14.13 Q3 turns into a
+retention sweep.
+
+**On #2 and #3** — both fixes belong in `haver_chart/lane.py`, **not** in `src/`. A
+module-level `threading.Lock()` wrapping the `BC.render_row` call serializes every render
+in the server process, and `plt.close("all")` inside that lock reclaims the figure. The
+lane process never holds figures for any other purpose, so `close("all")` is safe there
+in a way it would not be in shared code. Keeping both in the lane means the daily lane's
+render path is **byte-for-byte untouched**, which is what preserves the §13.10.1 pixel
+equivalence and keeps the blast radius at zero.
+
+The lock also happens to close a fifth hole for free: `outputs/raw/*.parquet` is written
+by `g4_lib.pull` with no lock and no temp-then-replace, and every cache write happens
+inside a render. Serialized renders mean serialized cache writes. That covers the server
+process against itself; it does **not** cover the server against a `run_daily` running on
+the same box, which is why §14.13 Q2 exists.
+
+**On #4** — `src/haver_search.py:27,68-82` latches `_READY = False` on the first failure
+and never re-checks. On a five-minute stdio process that is fine. On a server it converts
+a transient startup race — the `.env` not readable for two seconds, Neon cold — into
+permanent silent degradation where every description-only series parks forever and
+nothing ever says why. This one is in `src/` and therefore shared, so it ships with the
+daily-lane regression suites green in the same commit.
+
+### 14.6 The public edge — Cloudflare Tunnel onto `hvr-mcp.work`
+
+The metadata server sits on a droplet with a public IP, so Caddy terminates TLS directly
+and the DNS record is deliberately grey-cloud. **An AVD session host has no public IP and
+no inbound path**, and asking corporate IT to open 443 to a desktop is a request that
+should be refused. So the edge is inverted: `cloudflared` makes an **outbound** connection
+and Cloudflare publishes the hostname.
+
+This is a good fit for a pilot for reasons beyond necessity: no firewall change, no IT
+ticket, no inbound attack surface at all, free, and it stops cleanly when the tunnel
+process stops.
+
+- **Hostname:** `chart.hvr-mcp.work`. The domain is already at Cloudflare Registrar, so
+  this is one `cloudflared tunnel route dns` command, not a purchase.
+- **Named tunnel, not a quick tunnel.** `trycloudflare.com` URLs are random and change on
+  every restart; the Entra redirect URI is fixed, so a changing hostname breaks sign-in on
+  every restart.
+- **Ingress:** `chart.hvr-mcp.work` → `http://127.0.0.1:8100`.
+- **Coexistence:** the new proxied CNAME sits alongside the existing grey-cloud root A
+  record for the droplet. They do not interact.
+
+**Two risks this edge introduces, both specific to it, both absent on the droplet.** First,
+a tunnelled hostname is necessarily **orange-cloud proxied**, and Cloudflare's proxy
+returns 524 if the origin takes longer than ~100 s to respond. A render is seconds, but a
+cold Neon compute plus `haver_search`'s four-retry backoff can reach ~14 s before the pull
+even starts, so the margin is real but not enormous. Second, Streamable HTTP leans on SSE,
+and proxy buffering behaviour needs to be observed rather than assumed. Both are things
+the pilot exists to measure — and both disappear on the production VM, where Caddy on a
+public IP reproduces the droplet's arrangement exactly.
+
+### 14.7 Identity — and why the Entra assignment list is the licence boundary
+
+Auth is a straight copy of the metadata recipe (2026_haver_mcp plan §14.4): single-tenant
+app registration, Web redirect URI `https://chart.hvr-mcp.work/auth/callback`, an exposed
+API scope named `read`, `"requestedAccessTokenVersion": 2`, a client secret, and
+**"assignment required" turned on**.
+
+The reason OAuth rather than a bearer token is not negotiable, and it is worth restating
+because it looks like over-engineering: Claude's custom connector brokers the connection
+through Anthropic's cloud, and the connector requires OAuth 2.1 with Dynamic Client
+Registration and PKCE. Entra does not implement DCR. FastMCP's `AzureProvider` is an OAuth
+**proxy** that presents DCR to Claude while using one fixed app registration upstream.
+That is why the pattern exists.
+
+**The part that is specific to this section.** `Haver.direct("on")` is a process-global
+switch into a per-user-licensed DLX install. Every request a shared server serves runs
+under the **server account's** entitlement, not the caller's. That is a licensing question
+before it is a technical one, and 2026_haver_mcp plan §15.12 already made it a formal STOP
+gate: no central Windows data server without written confirmation that the Haver licence
+permits one DLX to serve the team.
+
+The pilot threads that needle honestly rather than dodging it. **Assign exactly one person
+— Aman — in Entra.** One user, one DLX, his own entitlement, reached from his own phone
+instead of his own laptop. That is not redistribution under any reading; it is the same
+person using the same licence through a different door. The licence conversation becomes
+necessary at precisely the moment a **second** name is added to the assignment list, and
+G10h makes that a hard stop rather than a checkbox someone ticks on a Friday.
+
+So the Entra assignment list is not merely access control here. It is the mechanism that
+keeps the pilot inside the existing licence, and it must be treated with that weight.
+
+### 14.8 Secrets and environment on a server
+
+**The mechanism that supplies the environment today disappears.** All three path variables
+reach the process through the `env` block that `configure.py:105-113` writes into
+`claude_desktop_config.json`. A remote server has no MCP client spawning it, so that block
+has no analogue.
+
+Replace it with what the metadata server does: `load_dotenv(<absolute path>)` at the top of
+`haver_chart/server.py`, reading a gitignored `config/.env` beside the install. This is
+safe to add unconditionally — `load_dotenv` does not override variables already present in
+the process, so a teammate's Claude-injected `env` block still wins on their laptop, and
+nothing about the stdio path changes.
+
+Full inventory for a server install:
+
+| Variable | Purpose | Absent |
+|---|---|---|
+| `ECON_TEMPLATES_CHARTS` | RenMac style module (vendored in the zip) | **Process will not start** |
+| `HAVER_MCP_SERVER` | Catalog modules; also fixes where `.env` is read from | Catalog dark, descriptions park |
+| `CLARIFIED_KNOWLEDGE_DIR` | The four ratified stores | Recall collapses; renders raise on legend |
+| `NEON_READONLY_DATABASE_URL` | Catalog login | Catalog dark |
+| `HAVER_CHART_HTTP` | Transport switch | stdio (today's behaviour) |
+| `HAVER_CHART_HTTP_PORT` | Loopback port | 8100 |
+| `HAVER_CHART_PUBLIC_URL` | OAuth base; must match the Entra redirect base | Fail-fast |
+| `HAVER_CHART_JWT_SIGNING_KEY` | Stable across restarts so sign-ins survive | Fail-fast |
+| `HAVER_CHART_AZURE_*` | Entra client/tenant/secret | Fail-fast |
+
+Two operational notes. `CLARIFIED_KNOWLEDGE_DIR` should point at a **local copy** on the
+server, not at `P:`, because `load_legend()` is re-read several times per render and
+`_read_json` swallows a share hiccup as `{}` — which turns a working chart into a "legend
+label not confirmed" raise. The AVD may not have `P:` mapped for a service account anyway.
+And the server needs no `ANTHROPIC_API_KEY`, no Graph credential, and no Teams secret; the
+chat lane reaches none of that (§13.5).
+
+### 14.9 Phases
+
+Ordered so that each phase can fail without wasting the next one's work, and so the
+riskiest unknown is answered first and cheapest.
+
+**Phase 0 — AVD reconnaissance. No production code. Half a day of attention plus a night
+of wall time. Answers whether the rest is worth starting.** Two harnesses, both read-only,
+both installing nothing and needing no admin rights.
+
+**(a) `scripts/g10b_avd_recon.ps1` — the cheap half, one shot.** Host identity and whether
+an AVD agent is present; FSLogix (a pooled host discards installs outside the profile
+container on reboot); the Terminal Services policy keys, of which `MaxDisconnectionTime`
+is the one that matters because a *sign-out* kills the server where a *disconnect* does
+not; Python; a live `LR@USECON` pull proving DLX answers a non-interactive caller;
+outbound reachability for `cloudflared` on UDP 7844 and the TCP 443 HTTP/2 fallback, plus
+proxy detection; local-admin rights (needed only to run `cloudflared` as a service); and
+`P:`. Every non-PASS line prints the consequence, because a host fact is only useful if
+you know which part of §14 it breaks.
+
+**(b) `scripts/g10b_dlx_watch.py` — the decisive half, overnight.** Start it, disconnect
+the remote-desktop window **without signing out**, and read the log the next morning. It
+probes two shapes every ten minutes because the server is both at different moments: an
+**in-process** pull through a handle that called `Haver.direct("on")` once (the server
+between restarts) and a **subprocess** pull from a cold interpreter (the server *after* a
+restart). Which one fails first is diagnostic. In-process failing alone means a long-lived
+handle rots and the server needs periodic recycling. Subprocess failing alone is worse: it
+works until the first restart and then cannot come back unattended, i.e. it fails at 3am
+rather than in front of you. The last clean timestamp is the pilot's usable window and the
+direct evidence for G10i. The log is flushed every cycle, so a session that dies still
+leaves the finding on disk.
+
+Both were smoke-tested on `RMACRO053` (Aman's own DLX machine, not an AVD) before being
+carried over: recon 0 FAIL, and both probes PASS with a live 19-row pull.
+
+**Phase 1 — make the lane server-safe. Code only, local machine, no network.** The four
+fixes in §14.5, plus the `load_dotenv` of §14.8. Daily-lane regressions green in the same
+commit. Nothing here is remote-specific; all of it is latent-bug repair that stands on its
+own merits even if the pilot is abandoned.
+
+**Phase 2 — transport swap, loopback only.** The §14.4 edits. Install the G9e zip on the
+AVD, write the Neon URL into `repo/config/.env`, run `selftest.py` (must be 37/37), then
+start with `HAVER_CHART_HTTP=1` and no auth variables — which must **fail to start**,
+proving the fail-fast guard. Then set the auth variables and drive the server from the AVD
+itself over `127.0.0.1:8100`. Nothing is public yet. The three path variables no longer
+need setting by hand — §14.18 — and the whole sequence is written up for an operator in
+`haver_chart/SERVER_SETUP.md`.
+
+**Phase 3 — public edge and identity.** Register the Entra app; create the named tunnel and
+the `chart.hvr-mcp.work` route; run `cloudflared` as a Windows service; confirm
+`https://chart.hvr-mcp.work/health` returns `{"status":"ok"}` from a phone on cellular
+data. Assign only Aman in Entra.
+
+**Phase 4 — connect and prove parity.** Add the custom connector in Claude Desktop, complete
+the Microsoft sign-in, and run the §13.1 Philly Fed target end to end. Then repeat on
+claude.ai and on mobile. Then the parity diff of §14.10.
+
+**Phase 5 — decide.** G10h (licence) and G10i (production host). Only after these does
+`haver-data` get the same treatment, in its own repo, against the resolved §15.12 gate.
+
+### 14.10 Validation plan
+
+The gate that matters is **parity**, and it reuses machinery that already exists.
+
+1. **Pixel parity, remote vs local.** Render the same spec through the remote connector and
+   through the local stdio lane, and diff the PNGs with the `ImageChops` comparison from
+   `scripts/g9b_lane_equivalence.py`. When they differ, use that harness's `daily_control`
+   trick — re-render locally *right now* — so a data-vintage difference can never be
+   mistaken for a transport bug. This is the same discipline that produced the 6/6 result
+   at G9b, applied to a new seam.
+2. **Concurrency.** Ask Claude for two charts in one turn and confirm two distinct files,
+   two correct images, and no cross-delivery. Repeat ten times. Without the §14.5 fixes
+   this should visibly fail, which is worth observing once before fixing it.
+3. **Figure leak.** Sample the process's working set after 1, 25 and 50 renders. Flat is the
+   pass condition.
+4. **Catalog recovery.** Start the server with the Neon URL wrong, issue a resolve (expect a
+   park), fix the URL, and confirm a later resolve binds. This fails today by construction.
+5. **Guardrails survive masking.** An unmapped transform must still surface verbatim as
+   `unmappable applied_transform 'flurgle'` with `mask_error_details=True`.
+6. **Store seal holds over HTTP.** `selftest.py` section 4 already asserts every `save_*`
+   raises `StoreWriteAttempted`; re-run it against the HTTP process.
+7. **Daily lane untouched.** `selftest_workflow` 254/254, `selftest_transforms` 43/43,
+   `run_daily --selftest` ALL PASS, `haver_chart/selftest.py` 37/37 — in the same commit as
+   every phase that touches `src/`.
+9. **The pre-flight runs where it is aimed.** `haver_chart/selftest.py` from an extracted
+   zip, on a machine that is not the developer's, with no path variables set. This is
+   listed as a validation step because assuming it rather than doing it is exactly how
+   §14.18 stayed hidden.
+8. **Session durability.** Leave the tunnel and server up, disconnect the AVD session, and
+   render from the phone at +1 h, +4 h and the next morning. Record where it breaks; that
+   number is the argument for the production VM.
+
+### 14.11 Gates
+
+| Gate | What | Status |
+|---|---|---|
+| G10a | This section signed off | **open — Aman** |
+| G10b | **STOP** — AVD reconnaissance: DLX answers a non-interactive caller and survives a disconnected session; `cloudflared` permitted | **PASSED IN PART 2026-08-23 (§14.16).** DLX serves a non-interactive caller with the **desktop app closed** — the Python API needs the credential, not the window. An **expired** credential raises a GUI login modal, so the un-credentialed path blocks rather than fails. **Outstanding: the disconnected-session watch verdict.** |
+| G10c | §14.5 fixes landed; daily lane green | **PASSED 2026-08-23 — selftest 37/37, workflow 254/254, transforms 43/43, `run_daily --selftest` ALL PASS, lane equivalence still 6/6 (§14.15)** |
+| G10d | Transport swap; HTTP server serves tools on loopback; fail-fast proven with auth vars unset | **PASSED 2026-08-23 — `scripts/g10d_http_check.py` 8/8; stdio handshake unchanged, `/mcp` 401 unauthenticated (§14.17)** |
+| G10e | Tunnel + Entra live; `/health` public; connector completes browser sign-in | **PASSED 2026-08-24 (§14.19).** `chart.hvr-mcp.work` live over a named Cloudflare tunnel (4 QUIC edge connections); `/health` verified from the AVD, from a second machine and from a phone on cellular; `/mcp` **401** unauthenticated; Entra single-tenant app with `read` scope, token v2, assignment required, one name assigned; Claude Desktop custom connector signed in and listing both tools |
+| G10f | **STOP** — parity: remote render pixel-identical to a same-vintage local render | **harness built 2026-08-24 (§14.21); awaiting a real connector PNG** |
+| G10g | Claude web and mobile render a chart with no local DLX | **open** |
+| G10h | **STOP** — written confirmation the Haver licence permits it, before a **second** name is assigned in Entra | **PASSED 2026-08-24 — Aman holds written confirmation that the licence permits one central DLX to serve the team.** This is the same gate as 2026_haver_mcp §15.12(2), which is resolved by the same document; G10j unblocked |
+| G10i | **STOP** — decide production host (dedicated always-on Windows VM) vs stopping at the pilot | **DECIDED 2026-08-24 — stay on the pilot.** The AVD remains the host; no dedicated VM is provisioned yet. Re-open when a second name is actually assigned or the lane is depended on for a deliverable, since §14.12's session-persistence risk is unfixed, not absent |
+| G10j | `haver-data` gets the same treatment — in 2026_haver_mcp, against its §15.12 gate | **unblocked by G10h; specified in 2026_haver_mcp §17** — separate server on `data.hvr-mcp.work`, same tunnel and same Entra app |
+
+Hard stops: `stdio` remains the default and every shipped teammate zip keeps working
+unchanged; no change to the `run_daily` chain; `seal_stores` stays and no `save_*` is ever
+reachable; no second Entra assignment before G10h; the AVD is never treated as production.
+
+### 14.12 Risks carried in
+
+- **DLX will not serve a background or disconnected session.** The proposal-ending risk,
+  which is why it is G10b and why Phase 0 costs half a day. No mitigation — it is a
+  finding, not a bug.
+- **The DLX credential expires weekly (Aman, 2026-08-23).** Signing in to the DLX app
+  once carries data pulls for about seven days, with a fresh prompt each Sunday. This is
+  much better news than a per-session or few-hourly 2FA, and it makes an unattended
+  server plausible — but it is not free, and it changes the operating model in three
+  ways. (1) The service acquires a **standing weekly manual touch**: somebody signs in to
+  the host every weekend or the connector is dead on Monday. (2) It acquires a **weekly
+  failure window** that lands on the same day every week, which on a shared service is a
+  recurring support burden rather than a one-off. (3) Most importantly, it is unknown
+  what an **expired credential looks like to a headless caller** — a clean exception the
+  server can surface and alert on, or a blocking prompt that wedges the process with no
+  desktop to answer it. The second would turn a predictable weekly outage into a hung
+  service. §14.13 Q6 carries this, and the watcher's subprocess timeout is deliberately
+  written to make a login prompt legible when it happens.
+- **The AVD host is pooled** and discards the install on reboot. Mitigation: the install is
+  an unzip, so re-installing is minutes; but it makes the production VM urgent rather than
+  optional.
+- **Idle policy signs the session out** and takes the server with it. Expected. §14.10 test
+  8 measures it rather than assuming it.
+- **Cloudflare proxy timeout or SSE buffering.** ~100 s origin limit and unobserved
+  buffering behaviour. Both vanish on a public-IP host with Caddy.
+- **Licence.** Contained by the single Entra assignment, and gated at G10h. The containment
+  only holds if the assignment list is actually treated as a gate.
+- **Secret sprawl.** Six new secrets on a machine Aman does not administer. Keep them in a
+  root-readable `config/.env`, never in the repo, and record the client-secret expiry — the
+  metadata deployment already carries secret rotation as an open item, and a second app
+  registration doubles it.
+- **Corporate policy.** An outbound tunnel from a managed desktop publishing an internal
+  service may well be against policy regardless of technical feasibility. Worth asking
+  before building, not after.
+
+### 14.13 Open questions — answered 2026-08-23 except where noted
+
+1. **Pilot scope — ANSWERED: `haver-chart` only.** It exercises DLX, the catalog, auth,
+   the transport *and* the image path in one server, so it proves strictly more than
+   `haver-data` would, and `haver-data` becomes a small copy of the pattern afterwards
+   (G10j). Doing both at once would split the work across two repos before either is
+   proven.
+2. **`run_daily` on the same box — recommendation stands: never co-locate.** If the daily
+   lane ever runs on the server it shares `outputs/raw/*.parquet` with the HTTP process
+   and the render lock no longer covers the cache. The server is a separate checkout with
+   its own `outputs/`.
+3. **Retention — ANSWERED: 14 days.** Unique filenames (§14.5 fix 1) mean `outputs/chat/`
+   grows without bound on a long-lived host, so a sweep deletes date folders older than
+   14 days. It runs in the server process, not as a scheduled task, so the policy travels
+   with the install.
+4. **Served image URL — deferred.** `/charts/{id}.png` would let a user open a full-size
+   chart outside the chat, but it needs its own auth story and the inline image already
+   works. Revisit only if the inline image proves too small to read on a phone.
+5. **Hostname — `chart.hvr-mcp.work`,** one hostname per server rather than path-based
+   routing, matching the one-app-registration-per-server rule of §14.4(b).
+6. **What does the weekly DLX expiry look like to a headless caller? — OPEN, and it is
+   the one Phase 0 question that cannot be answered in an hour.** Two sub-questions, in
+   order of importance. **(a) Failure shape:** when the credential lapses, does a
+   background `Haver.data` raise promptly, or block on a prompt nobody can answer? A
+   raise is manageable — the server catches it, returns a clear "DLX sign-in required"
+   to the operator, and an uptime check alerts. A block wedges the process and every
+   subsequent request queues behind it. The cheapest way to find out is to let
+   `g10b_dlx_watch.py` run **across a Sunday boundary**: its subprocess probe has a
+   timeout precisely so a login prompt shows up as a timeout rather than a hang, and the
+   in-process column will show whether an already-open handle outlives the expiry.
+   **(b) Whether it can be avoided at all:** worth asking Haver whether a service account,
+   a longer-lived token, or an unattended mode exists. That question rides along with the
+   G10h licence conversation rather than being a separate approach.
+
+   Note that this is a **different** question from G10b. The weekly expiry is about
+   credential lifetime; G10b is about session attachment — whether DLX serves a caller
+   while no desktop session is attached. A week-long credential says nothing about the
+   second, and the hour-long disconnect test says nothing about the first.
+
+### 14.14 What this section deliberately does not do
+
+It does not touch the daily lane. It does not add a tool, a transform, or a row field. It
+does not relax the store seal. It does not move the knowledge stores. It does not make the
+AVD a production host, and it does not assume the Haver licence permits anything it does
+not already permit today.
+
+### 14.15 Phase 1 built — the lane is server-safe (G10c, 2026-08-23)
+
+The four §14.5 defects are fixed and the `load_dotenv` of §14.8 is in. No transport change
+yet; with `HAVER_CHART_HTTP` unset — which is still every install in the field — the lane
+behaves exactly as it did before.
+
+**Three of the four fixes landed in `haver_chart/lane.py`, deliberately, not in `src/`.**
+A process-wide `threading.Lock` wraps the `render_row` call and `plt.close("all")` runs in
+its `finally`; `_save_path` appends a `uuid4[:8]` token. Keeping all three in the lane
+means the daily lane's render path is byte-for-byte unchanged, which is what preserves the
+§13.10.1 pixel equivalence — and it does: 6/6 still identical after the change.
+
+Two points worth recording because they are easy to get wrong later. The figure close is
+in a `finally` rather than after the call, since a raised guardrail is exactly the render
+most likely to be retried and leaking on the failure path would leak fastest. And the lock
+covers more than pyplot: `g4_lib.pull` writes its parquet cache with no lock and no
+temp-then-replace, so serializing renders also serializes every cache write this process
+makes. That closes the cache-corruption hole *within* the process, which is why §14.13
+answer 2 refuses to co-locate `run_daily` — a second process would reopen it.
+
+**The fourth fix is in `src/` and could not be avoided.** `haver_search._ensure` latched
+`_READY = False` permanently on the first failed probe. It now caches a failure for 60s
+and re-probes after that. The latch was harmless when a process lived five minutes; on a
+server it converted a two-second startup race into permanent silent degradation, parking
+every description-only series for the life of the process with nothing saying why. Note
+what the latch actually guards, which the original comment understated: only the module
+import and the dotenv load. A missing `NEON_READONLY_DATABASE_URL` does not park — it
+raises out of `db.run_query`, because `_is_transient_db` correctly declines to treat a
+`RuntimeError` as a cold-start blip.
+
+**Retention (§14.13 answer 3) ships with the change that creates the need.** Unique
+filenames mean the folder only grows, so `_sweep_outputs` drops date folders older than
+`CHAT_RETENTION_DAYS` (default 14), at most once per process per day, never today's, and
+only for well-formed date names so the harnesses' `_control` namespace survives.
+
+**Evidence.** `haver_chart/selftest.py` **37/37** — a new section 9 asserts the properties
+directly: two `_save_path` calls with the same filename differ while keeping the readable
+stem, `plt.get_fignums()` is empty after six live renders, the render lock exists, and the
+sweep both deletes past the cutoff and spares a non-date folder. Daily lane green in the
+same commit: `selftest_workflow` 254/254, `selftest_transforms` 43/43, `run_daily
+--selftest` ALL PASS. `scripts/g9b_lane_equivalence.py` **6/6 match, 0 differ**.
+
+### 14.16 DLX findings from the AVD (G10b, 2026-08-23)
+
+Two results, one much better than expected and one that needs engineering rather than
+hope.
+
+**The Python API does not need the desktop app.** With DLX closed entirely, a pull still
+succeeds. What the API needs is the *credential*, not the window — so the server does not
+have to keep a GUI application running, and nothing about the lane depends on a visible
+desktop. This is the finding that makes an unattended host plausible at all.
+
+**An expired credential raises a GUI login modal** (`Haver Login2 DLXVG3 6.0.1.3d`, an
+email-and-password window). This is the failure shape §14.13 Q6(a) was worried about, and
+it is the unfavourable one: the un-credentialed path **blocks on a dialog** rather than
+raising. On a host with no attached interactive desktop that dialog has nowhere to appear,
+so the call does not fail — it waits.
+
+Aman's mitigation is to sign in manually every Saturday night, ahead of the Sunday prompt.
+That is sound and it is the right operating procedure, but it lowers the *probability* of
+hitting the state without removing the *failure mode*, and one missed weekend is enough.
+So the design has to assume the block will happen eventually.
+
+**The consequence lands squarely on the §14.5 render lock, and it is worth being explicit
+about.** Every `render_chart` holds that lock across the whole `render_row` call, and the
+DLX pull happens inside it. A blocked pull therefore does not wedge one request — it holds
+the lock forever and **every subsequent render in the process blocks behind it**, silently,
+with no error reaching anyone. The lock is still correct (§14.5 gives the reasons), but it
+converts one stuck call into a dead server, so it needs a guard:
+
+1. **Acquire the lock with a timeout.** A caller that cannot get it within
+   `CHART_RENDER_LOCK_TIMEOUT_S` raises a plain, specific error naming a stuck render and
+   the restart, instead of joining an invisible queue. This does not unwedge the process —
+   nothing in-process can, because the blocked call is inside a vendor library waiting on
+   a window — but it makes the failure **legible and bounded**, which is the difference
+   between a support ticket and a mystery.
+2. **`/health` reports render liveness**, not just process liveness. A wedged server still
+   answers a plain liveness probe, which is exactly how this failure would hide. Exposing
+   the last-completed-render timestamp and whether the lock is currently held lets an
+   uptime check spot the wedge and restart the service.
+
+Neither is speculative hardening: the modal in the screenshot is the mechanism, and the
+weekly expiry is the schedule on which it arrives.
+
+### 14.17 Phase 2 built — the transport swap (G10d, 2026-08-23)
+
+`HAVER_CHART_HTTP=1` now serves Streamable HTTP on `127.0.0.1:8100` behind Entra OAuth.
+Unset — which is still every install in the field — nothing changed.
+
+**What landed.** The `_build_auth()` recipe from the metadata server, with its fail-fast
+check kept verbatim and its variables renamed to `HAVER_CHART_AZURE_*`: each server needs
+its own app registration because the redirect URI differs, so bare `AZURE_*` would collide
+the moment a host runs both. `mask_error_details` became `HTTP_ENABLED` — the guardrails
+still reach the client verbatim because they arrive as `ToolError` and FastMCP passes
+those through masking, while an accidental stack trace or connection string no longer
+does. `structured_content` returns `chart_id` instead of `path` over HTTP. And `/health`
+answers `lane.health()`.
+
+**The lock guard of §14.16 shipped with it,** because the two belong together: the render
+lock is what makes a stuck DLX call fatal, so the timeout that makes it legible has to
+exist before anything long-lived runs. `_RENDER_LOCK.acquire(timeout=...)` raises a named
+error pointing at the DLX sign-in and the restart, and `/health` reports `rendering` plus
+`last_render_finished` so an uptime check can tell a busy server from a dead one. A plain
+200 cannot: a wedged process answers it happily.
+
+**The harness proves the thing most worth proving, which is not HTTP.** A dozen teammate
+zips already spawn this file over stdio, so `scripts/g10d_http_check.py` leads with a real
+JSON-RPC handshake — `initialize`, `tools/list`, both tools — run with every
+`HAVER_CHART_*` variable stripped from the environment, so a stray shell variable cannot
+make the check silently test the wrong transport.
+
+Only `fastmcp[azure]` in `requirements.txt` changed, unconditionally rather than as an
+optional extra. It is a few hundred KB, and one requirements file for both transports
+means a host can never be one `pip install` short of the mode it was asked to run.
+
+**Evidence.** `scripts/g10d_http_check.py` **8/8**: stdio advertises `resolve_series` and
+`render_chart`; HTTP mode with no secrets exits 1 naming all five missing variables;
+with credentials it binds and `/health` returns
+`{"status":"ok","rendering":false,"last_render_finished":null,"retention_days":14}`; and
+`/mcp` returns **401** to an unauthenticated request, so the auth is real and not merely
+configured. Daily lane green in the same commit: selftest **37/37**, workflow
+**254/254**, transforms **43/43**, `run_daily --selftest` ALL PASS, lane equivalence
+**6/6**.
+
+### 14.18 The pre-flight check had never been run outside this machine (2026-08-24)
+
+Installing the zip on the AVD produced a `FAIL` at `selftest.py` section 2 and then a
+crash importing `renmac_chart_style`. The three relocatable paths of G9e step 1 were only
+ever supplied by the **`env` block Claude Desktop injects**, written by `configure.py`.
+Anything else driving the lane — the selftest from a shell, a server started by hand —
+fell back to defaults that are absolute paths inside this developer's checkout.
+
+So **`TEAMMATE_SETUP.md` step 5 had never worked for a teammate**, and could not have.
+The AVD did not cause it; it was the first machine to attempt the step.
+
+**Why it survived G9e.** The tool itself works — Claude injects the variables — and the
+selftest is precisely the step people skip when nothing appears broken. G9e's own
+evidence was gathered here, where the defaults resolve. A check that only ever ran where
+it could not fail is not evidence, and this is the second time that shape of mistake has
+cost a day: §14.15's `_READY` latch was also invisible until something long-lived ran.
+
+**The fix, in `bootstrap.py`.** Read `config/.env`, then for each of the three variables
+adopt the copy vendored in the package when the variable is unset *or points at a
+directory that no longer exists*. The zip already carries these files, so asking the
+operator to re-state where they are was a configuration step that could only be got
+wrong. Consequences worth naming:
+
+- The **source checkout is untouched** — the probe requires a `vendor/` sibling, which
+  only the zip layout has.
+- **A moved package now keeps working** instead of crashing on `renmac_chart_style`,
+  which was a standing row in the teammate troubleshooting table. The substitution
+  prints to stderr; silently using different files than you were told to is its own bug.
+- **The selftest reports `(package)` distinctly from `(env)`.** A silent fallback that
+  happens to be right is how this defect survived, so the distinction is now visible.
+- The `.env` read moved out of `server.py` into `bootstrap.py`, which is what lets the
+  selftest see the environment the server will see. Without that it cannot honestly
+  call itself a pre-flight check.
+
+**One `.env` is enough** for a server, carrying only `NEON_READONLY_DATABASE_URL`: it is
+loaded into the process before the catalog module looks for its own file, and
+`load_dotenv` never overrides what is already set.
+
+**Evidence.** The shipped zip extracted to a scratch folder with all three variables
+cleared: **37/37**, three `(package)` lines in section 2. Regressions unchanged — g10d
+8/8, workflow 254/254, transforms 43/43, `run_daily --selftest` ALL PASS.
+
+**Written up for an operator** in `haver_chart/SERVER_SETUP.md`: the server install is a
+third audience alongside the developer (`SETUP.md`) and the teammate laptop
+(`TEAMMATE_SETUP.md`), differing in transport, in where settings come from, and in who
+may call it. Folding it into either of those would have made both wrong.
+
+### 14.19 Phase 3 done — the lane is public and signed in (G10e, 2026-08-24)
+
+`https://chart.hvr-mcp.work` serves the lane from the AVD through a named Cloudflare
+tunnel, behind Entra sign-in, registered in Claude Desktop as a custom connector. Both
+tools list from a laptop with no DLX and no Python.
+
+**Sequencing did the work here.** Each stage was proven with the next one still absent,
+so no failure ever had two candidate causes: `g10d_http_check` on the AVD (HTTP works on
+this host, no network); then the tunnel with **placeholder Entra GUIDs** (the network path
+works, no identity); then the real registration (identity works, on a path already
+proven). Publishing with placeholders is safe precisely because the endpoint is closed —
+nobody authenticates against a client ID that does not exist — and it is what let the
+public edge be verified from three vantage points before the portal was touched at all.
+The one failure that did occur, `route dns` silently never having run, took two minutes
+to find because `nslookup` from a third machine could separate "no DNS record" from
+"tunnel down" from "server down".
+
+**Verified.** `/health` from the AVD, from a second machine off the AVD, and from a phone
+on cellular. `/mcp` **401** unauthenticated, with `WWW-Authenticate` pointing at the
+protected-resource document, which names the authorization server, whose metadata
+advertises `registration_endpoint` and `scopes_supported: ["read"]` — the discovery chain
+Claude walks, complete and self-consistent, and `read` matching the scope actually defined
+in Entra.
+
+**CIMD, not DCR.** Claude detected `client_id_metadata_document_supported` and chose
+Anthropic's hosted client metadata. Worth keeping deliberately: dynamic client
+registration would have the server persist a client record per connection, and this server
+gets restarted freely (twice during setup). Registrations lost across a restart present as
+an auth bug. CIMD stores nothing, so there is nothing to lose.
+
+**Entra shape.** Single tenant; redirect `https://chart.hvr-mcp.work/auth/callback`;
+exposed scope `read` with consent set to *admins and users* (choosing admins-only would
+have guaranteed an admin round-trip); `requestedAccessTokenVersion: 2`; client secret with
+a diarised expiry; **assignment required, one name**. That last is the licence boundary of
+§14.7, and G10h still gates a second.
+
+**Carried forward.** The server currently runs from an elevated prompt — acceptable on a
+test bed, not on the production host of G10i. Both processes are foreground and die with
+the session, so §14.10's durability item is unchanged and still unmeasured.
+
+---
+
+### 14.20 A rendered chart is now a file you can fetch (2026-08-24)
+
+The remote lane returned the chart as inline base64 and nothing else. That is enough to
+**look** at and useless to **use**: the PNG is on the AVD, so putting one in a newsletter
+meant saving it out of the transcript by hand, at whatever resolution the client chose to
+show. `GET /chart/<chart_id>` closes that, and `render_chart` now returns `chart_url`
+alongside `chart_id` over HTTP — assembled server-side from `HAVER_CHART_PUBLIC_URL`,
+because a hallucinated URL for a chart that genuinely exists is a uniquely annoying thing
+to debug.
+
+**The route is unauthenticated, deliberately.** The point is a link that opens in a
+browser or drops into a document, and a browser following a link carries no bearer token.
+Gating it behind Entra would leave the operator hand-crafting `curl` calls with a token
+pasted from somewhere — that is not solving the problem, it is relocating it. So the URL
+*is* the capability, and the id is what has to carry the weight:
+
+- `_save_path` now names every file with a **full uuid4** (122 bits) rather than the
+  8-hex prefix it used before. Those were always two different jobs sharing one string:
+  eight hex is ample against a collision between two concurrent renders and far too
+  little against somebody guessing a URL. Only the second job is new, and it is the one
+  with the larger number.
+- `lane.chart_path` applies two independent guards, because this is the only route in
+  the system that turns text off the public internet into a filesystem path. A character
+  allowlist rejects every traversal spelling at once — no separators, no drive letters,
+  no `..`, no NUL — and a containment check on the **resolved** path then catches what an
+  allowlist structurally cannot, namely a symlink inside the tree pointing out of it.
+  Either alone would probably do; "probably" is not the standard here.
+- Every failure returns `None` and the route answers an identical flat 404, so it cannot
+  be used to probe which ids once existed.
+
+**The cost, stated rather than glossed:** anyone holding a link can fetch that one chart
+until the retention sweep removes it (`CHAT_RETENTION_DAYS`, 14). No id is derivable from
+another and nothing enumerates the directory, so the exposure is one chart per leaked
+link, not the archive. If a chart is ever too sensitive for that, the inline image still
+works and this route need not be used. Revisit if the lane ever renders something
+genuinely market-moving before publication.
+
+Proven in `selftest.py` §10 (41/41): nine traversal spellings all rejected, the id
+asserted to be 32 hex, and resolution exercised against **the real PNG rendered in
+section 6** rather than a fixture built to pass. A traversal guard with no test is not a
+guard.
+
+### 14.21 The parity harness, and why it needs a control (G10f, 2026-08-24)
+
+`scripts/g9b_lane_equivalence.py` proved the **wrapper** — ledger row through
+`render_chart`'s argument surface produces the daily lane's pixels — but it drives
+`lane.render()` in-process. It never touches HTTP, the tunnel, Entra, or the server's
+Python. `scripts/g10f_remote_parity.py` covers that gap: it takes a PNG that came back
+**through the connector** and diffs it against a local render.
+
+The load-bearing part is *when* the control is rendered. The remote chart was drawn from
+data the server pulled at that moment; compare it against anything rendered earlier and a
+revision to IP or a survey index shows up as differing pixels that read exactly like a
+transport bug. Rendering the control **now** removes the only variable that matters — the
+data vintage — so a difference that survives it is a real difference. Same reasoning as
+g9b's `daily_control`, which is why g9b's `compare` and `daily_control` are imported
+rather than copied; its `argv` parsing moved into `main()` so importing it no longer
+consumes the caller's command line.
+
+Two input modes, because the interesting charts do not all have ledger rows: `--spec`
+takes the `render_chart` arguments as JSON (ask Claude to print them verbatim — a spec
+retyped by hand tests your transcription, not the lane), and `--ledger DATE --chart-id ID`
+reproduces a finished backfill row through `daily_control`.
+
+On a difference it names the likely causes in order rather than leaving a pixel count.
+A **stale `knowledge/` copy on the server** — one older `legend_labels.json`, one
+different legend string — is far commoner than a wrapper defect, and nothing about
+"4723 differing px" suggests looking there.
+
+Verified in both directions before being trusted: an identical pair reports MATCH and
+exits 0; a title-only change reports DIFFER, exits 1, and puts the bounding box over the
+title. A parity harness that has only ever been shown to pass is not evidence.
+
+**G10f is not closed by this.** The harness exists; the gate needs a PNG that has
+actually crossed the tunnel.

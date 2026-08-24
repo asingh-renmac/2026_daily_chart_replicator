@@ -60,9 +60,11 @@ def _build_auth():
     tunnel is about to publish is worse than one that refuses to start, and the DLX
     entitlement behind it belongs to one licensed user (§14.7).
 
-    Own variable names rather than the metadata server's bare `AZURE_*`: each server
-    needs its own app registration because the redirect URI differs, so two servers on
-    one host would collide.
+    Own variable names rather than the metadata server's bare `AZURE_*`, `HAVER_PUBLIC_URL`
+    and `HAVER_HTTP_PORT`, which would collide outright if two servers on one host ever
+    shared a `config/.env`. Note this is about the VARIABLES, not the registration: an
+    Entra app accepts many redirect URIs, so one app can front several servers, and
+    `2026_haver_mcp` §17.4 has haver-data reuse this very registration.
     """
     if not HTTP_ENABLED:
         return None
