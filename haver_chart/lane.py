@@ -313,14 +313,54 @@ def _save_path(filename: str = "", day: Optional[str] = None) -> Path:
     image content; with a fixed name — and the DEFAULT stem is fixed, `chart` — a second
     call landing between those two steps hands one caller the other's chart. That is
     reachable with one user, not only on a shared server, because Claude issues parallel
-    tool calls within a single turn."""
+    tool calls within a single turn.
+
+    The token is a FULL uuid4 (122 bits), not a short prefix, because over HTTP the file
+    stem is also the `/chart/<id>` URL and that URL is an unauthenticated capability
+    (§14.20). Eight hex characters is ample against collision and far too little against
+    someone guessing a URL, and those are different jobs done by the same string."""
     day = day or date.today().isoformat()
     stem = Path(filename or "chart").stem or "chart"
     stem = "".join(ch for ch in stem if ch.isalnum() or ch in "-_") or "chart"
     out = OUT_ROOT / day
     out.mkdir(parents=True, exist_ok=True)
     _sweep_outputs(day)
-    return out / f"{stem}-{uuid.uuid4().hex[:8]}.png"
+    return out / f"{stem}-{uuid.uuid4().hex}.png"
+
+
+# A chart id is the PNG's stem. Anything outside this set cannot name a file this lane
+# wrote, so rejecting it costs nothing and removes every traversal spelling at once —
+# no separators, no drive letters, no `..`, no NUL, no percent-decoded surprises.
+_CHART_ID_OK = re.compile(r"\A[A-Za-z0-9_-]{1,128}\Z")
+
+
+def chart_path(chart_id: str) -> Optional[Path]:
+    """Resolve a `/chart/<id>` request to a PNG under `OUT_ROOT`, or None.
+
+    Two independent guards, because this is the one route that turns caller-supplied
+    text into a filesystem path. The pattern above is the allowlist; the containment
+    check afterwards is the backstop, comparing the FULLY RESOLVED path against the
+    resolved root so that a symlink inside the tree cannot point out of it. Either alone
+    would probably do. Both, because "probably" is not the standard for a path built
+    from a public URL.
+
+    Returns None rather than raising for every failure — a bad id, a missing file, a
+    swept-away day — so the route answers 404 identically in all of them and cannot be
+    used to probe which ids once existed.
+    """
+    if not _CHART_ID_OK.match(chart_id or ""):
+        return None
+    root = OUT_ROOT.resolve()
+    for day_dir in sorted(OUT_ROOT.glob("*"), reverse=True):   # newest day first
+        if not day_dir.is_dir():
+            continue
+        candidate = (day_dir / f"{chart_id}.png").resolve()
+        if not candidate.is_file():
+            continue
+        if root not in candidate.parents:
+            return None
+        return candidate
+    return None
 
 
 def _close_figures() -> None:

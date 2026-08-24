@@ -111,6 +111,36 @@ async def health(request):
     return JSONResponse(lane.health())
 
 
+@mcp.custom_route("/chart/{chart_id}", methods=["GET"])
+async def chart(request):
+    """Serve a rendered PNG so a remote operator can get a FILE, not just an image in a
+    transcript (§14.20).
+
+    The inline image is enough to look at and useless to put in a newsletter: the file
+    is on the server, and before this the only route to a copy was saving it out of the
+    conversation by hand.
+
+    UNAUTHENTICATED, DELIBERATELY, and the id is what makes that defensible. The whole
+    point is a link that opens in a browser or drops into a document, and a browser
+    following a link carries no bearer token — requiring one would leave the operator
+    hand-crafting curl commands, i.e. not solving the problem. So the URL is the
+    capability: `_save_path` names every file with a full uuid4, and 122 bits is not
+    reachable by guessing at any rate the edge would tolerate.
+
+    What that buys and what it costs, stated plainly, because it is a real trade:
+    anyone holding the link can fetch that one chart until the retention sweep removes
+    it. No id is derivable from another; nothing enumerates the directory; a wrong id is
+    a flat 404 that reveals nothing. If a chart is ever too sensitive for that, the
+    inline image still works and this route does not have to be used.
+    """
+    from starlette.responses import FileResponse, PlainTextResponse
+    path = lane.chart_path(request.path_params.get("chart_id", ""))
+    if path is None:
+        return PlainTextResponse("not found", status_code=404)
+    return FileResponse(path, media_type="image/png",
+                        headers={"Cache-Control": "private, max-age=3600"})
+
+
 @mcp.tool
 def resolve_series(
     base_descriptor: str,
@@ -227,8 +257,10 @@ def render_chart(
     worse than no chart.
 
     Never touches the daily lane's renders or ledger. On stdio the result carries the
-    PNG's `path` on this machine; over HTTP it carries a `chart_id` instead, because the
-    file is on the server and a path would be meaningless to the person reading it.
+    PNG's `path` on this machine. Over HTTP it carries a `chart_id` and a `chart_url`
+    instead, because the file is on the server and a path would be meaningless to the
+    person reading it — GIVE THE OPERATOR THE `chart_url` when they want a copy to keep,
+    since the inline image is for looking at, not for putting in a document.
     """
     try:
         out = lane.render(
@@ -251,6 +283,10 @@ def render_chart(
     # itself is inline base64, so nothing is lost by withholding it (§14.4e).
     if HTTP_ENABLED:
         summary["chart_id"] = Path(out["path"]).stem
+        # The downloadable link, assembled here rather than left for the model to guess:
+        # a hallucinated URL for a chart that DOES exist is a uniquely annoying failure.
+        summary["chart_url"] = (os.environ["HAVER_CHART_PUBLIC_URL"].rstrip("/")
+                                + f"/chart/{summary['chart_id']}")
     else:
         summary["path"] = out["path"]
     return ToolResult(content=[Image(path=out["path"]).to_image_content()],

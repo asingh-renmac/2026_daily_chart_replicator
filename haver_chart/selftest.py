@@ -29,6 +29,7 @@ FORBIDDEN = ("ingest", "classify", "ledger", "teams", "teams_auth", "approval",
              "propose", "chartspec", "folder_ingest", "extract_assets")
 
 _RESULTS: list[tuple[bool, str, str]] = []
+_render_out: dict | None = None            # set by section 6, consumed by section 10
 
 
 def check(ok: bool, what: str, detail: str = "") -> None:
@@ -129,6 +130,7 @@ if r and r["status"] == "resolved":
                           filename="selftest", title="haver-chart selftest",
                           subtitle="Z-score", st_force=True, sample_start="2000")
         png = Path(out["path"])
+        _render_out = out                  # section 10 resolves this exact file by id
         check(png.exists() and png.stat().st_size > 10_000,
               "render_chart wrote a PNG", f"{png} ({png.stat().st_size // 1024} KB)")
         check(str(png).replace("\\", "/").find("/outputs/chat/") > 0,
@@ -222,6 +224,37 @@ try:
 finally:
     __import__("shutil").rmtree(keep, ignore_errors=True)
     __import__("shutil").rmtree(old, ignore_errors=True)
+
+print("\n10. Served-chart id resolution (§14.20)")
+# `/chart/<id>` is the one route that turns text off the public internet into a
+# filesystem path, so the guard gets tested rather than assumed. The render in section 6
+# already wrote a real PNG — resolve THAT, so this exercises the same naming the server
+# will serve rather than a fixture built to pass.
+served = Path(_render_out["path"]) if _render_out else lane._save_path("idcheck")
+if _render_out:
+    check(lane.chart_path(served.stem) == served.resolve(),
+          "a real rendered chart resolves by its id", served.stem[:24] + "…")
+else:
+    check(False, "a real rendered chart resolves by its id", "skipped — no render above")
+
+check(len(served.stem.rsplit("-", 1)[-1]) == 32,
+      "the id carries a full uuid4, so the URL is not guessable",
+      f"{len(served.stem.rsplit('-', 1)[-1])} hex chars")
+
+# Every spelling of "leave the output tree" that a URL can express. `%2e%2e%2f` is
+# decoded by the ASGI server before we see it, so `..` covers that case too.
+for evil in ("../../../../Windows/System32/drivers/etc/hosts", "..\\..\\secret",
+             "C:/Windows/win.ini", "/etc/passwd", "a/b", "", "..", ".",
+             "x" * 129, "chart\x00.png"):
+    if lane.chart_path(evil) is not None:
+        check(False, "chart_path refuses paths outside the output tree", repr(evil))
+        break
+else:
+    check(True, "chart_path refuses paths outside the output tree",
+          "9 traversal spellings all rejected")
+
+check(lane.chart_path("no-such-chart-" + "0" * 32) is None,
+      "an unknown id is a plain miss, not an error")
 
 n_bad = sum(1 for ok, _, _ in _RESULTS if not ok)
 print("\n" + "=" * 78)

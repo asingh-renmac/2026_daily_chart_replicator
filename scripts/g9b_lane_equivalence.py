@@ -28,11 +28,8 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 from haver_chart import lane  # noqa: E402
 
-DATE = sys.argv[1] if len(sys.argv) > 1 else "2026-08-11"
-ONLY = sys.argv[2] if len(sys.argv) > 2 else ""
-
-LEDGER = ROOT / "data" / f"ledger_backfill_{DATE}.csv"
-RENDERS = ROOT / "data" / f"backfill_{DATE}" / "renders"
+# argv is read inside main() so `g10f_remote_parity` can import `compare` and
+# `daily_control` without this module consuming ITS command line.
 
 # Slot keys the renderer consumes. Anything else in the ledger slot (search_attempts,
 # candidate_detail, relevance…) is resolution bookkeeping and must NOT reach render.
@@ -102,6 +99,11 @@ def compare(a: Path, b: Path) -> tuple[bool, str]:
 
 
 def main() -> int:
+    DATE = sys.argv[1] if len(sys.argv) > 1 else "2026-08-11"
+    ONLY = sys.argv[2] if len(sys.argv) > 2 else ""
+    LEDGER = ROOT / "data" / f"ledger_backfill_{DATE}.csv"
+    RENDERS = ROOT / "data" / f"backfill_{DATE}" / "renders"
+
     rows = list(csv.DictReader(LEDGER.open(encoding="utf-8")))
     rows = [r for r in rows if r.get("chart_spec") and r.get("series")]
     if ONLY:
