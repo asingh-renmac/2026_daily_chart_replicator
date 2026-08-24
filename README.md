@@ -248,11 +248,21 @@ on the same data — that equivalence is gated by `scripts/g9b_lane_equivalence.
 store the daily lane has accumulated but **never writes them**, and it writes only to
 `outputs/chat/<date>/`, never to a backfill render dir or the ledger.
 
+Post-render edits work the same way — you say what to change and the chart is redrawn,
+with everything else carried over from the conversation. There is no edit operation and
+nothing is overwritten; each attempt is a new file, so an earlier version is still there
+if the change was wrong. The equivalents of the Teams field controls below (legend,
+subtitle, `st_force`, title, title-less, axis side, transform, shape) are all just
+sentences here. **`haver_chart/SETUP.md` § "Example C — iterating"** has each one written
+out, including the traps: the transform label cannot be suppressed, x-axis labelling is a
+fixed vocabulary rather than a date pattern, and a legend fixed in chat does not persist
+to the store.
+
 Setup, worked examples, and the guardrail reference: **`haver_chart/SETUP.md`**.
-Design and gates: `plan.md` §13. Pre-flight check:
+Design and gates: `plan.md` §13 (remote lane: §14). Pre-flight check:
 
 ```bash
-C:/Users/asingh/envs/shared-3.10/Scripts/python.exe haver_chart/selftest.py   # expects 28/28
+C:/Users/asingh/envs/shared-3.10/Scripts/python.exe haver_chart/selftest.py   # expects 37/37
 ```
 
 ---

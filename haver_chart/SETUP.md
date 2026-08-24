@@ -193,30 +193,131 @@ Activity Index" binds where "Business Activity Index" cannot.
 
 ## Example C — iterating
 
-This is where the chat lane earns its keep. Every one of these is a re-render, in
-context, with no ticker re-resolution:
+This is where the chat lane earns its keep. Ask in plain English; you never name an
+argument or edit anything by hand.
+
+**There is no "edit" operation, and knowing that explains the behaviour.** Every change
+is a fresh render of the whole chart — the tool takes a full specification and writes a
+new PNG each time. What makes it feel like editing is that Claude keeps the previous
+call's settings in the conversation and re-sends them with your one change applied. Two
+consequences worth having in mind: nothing you asked for earlier is lost when you change
+one thing, and each attempt is a **new file**, so you can go back to an earlier version
+rather than having overwritten it. Re-renders are quick because the data is already
+pulled.
+
+### Title
 
 > **You:** Title it "Factory output is lagging the survey" instead.
 
+> **You:** No title at all, just the chart.
+
+The second is for charts going into a document that supplies its own heading. The
+subtitle stays, because it carries the transform label.
+
+### Subtitle
+
+> **You:** Change the subtitle to "z-score, 1990 onward".
+
+One catch. **The transform label is appended automatically and cannot be turned off**, so
+a chart always says what was done to it. If your wording already states the transform
+you will see it twice — "(z-score, z-score)". Say so and it is used verbatim instead:
+
+> **You:** The subtitle already says z-score — use mine exactly, don't append the
+> transform again.
+
+Leave the parentheses off; the house style adds exactly one set.
+
+### Legends
+
+One label or several, it is the same request:
+
+> **You:** Change the second legend to "Philly Fed current activity".
+
+> **You:** Relabel both — the first is "Industrial production" and the second is
+> "Philly Fed current activity".
+
+Keep the qualifiers that change meaning: SA or NSA, units, base year, per-hour. "Real
+output per hour (SA, 2017=100)" is a label; "Productivity" is not.
+
+Two things that surprise people. On a dual-axis chart the renderer adds the LHS/RHS tags
+itself, so do not type them into the label or they appear twice. And a label you fix here
+**does not stick** — the learning stores are read-only from this lane, so the same series
+needs the same correction tomorrow. Making it permanent means approving it in the daily
+pipeline.
+
+### X-axis
+
+> **You:** Label the x-axis by year rather than month.
+
+> **You:** Put a tick every five years.
+
+> **You:** Use quarter labels.
+
+The label styles are a fixed set — **auto, year, month, quarter** — not a free-form date
+pattern. Quarter labels sit on quarter *ends*, because that is where a quarterly reading
+is stamped throughout this system; ticking quarter starts would put the Apr-1 gridline
+beside the Mar-31 bar and call it Q2.
+
+For the *span* rather than the labelling:
+
+> **You:** Start it at 2010.
+
+> **You:** End the axis where the survey ends, not where IP ends.
+
+### Dual axis
+
 > **You:** Put the Philly Fed line on the right axis with its own scale.
 
-*(Claude re-renders with `axis_mode="dual"` and `axis="R"` on that slot; the legends
-pick up LHS/RHS tags automatically.)*
+Two things change together — the chart becomes dual-axis and that one series moves to the
+right — which is why asking for "a right axis" without saying *which* series belongs on
+it produces an empty one.
 
-> **You:** Start it at 2010, and drop the recession bands.
+> **You:** Match the source chart: left axis −3 to 3, right axis 20 to 60.
+
+Only worth doing when you are reproducing printed bounds. Left alone, the renderer fits
+the range to the data; a hand-set bound can only hide something.
+
+### Transforms
+
+> **You:** Make it year-over-year percent change instead of the level.
+
+> **You:** Drop the z-score and plot the raw index.
+
+If the new transform applies to the same series already bound, that is all it takes. If
+you are switching to a **different formula that brings in another series**, Claude has to
+re-resolve first, because every mnemonic in a formula needs its own confirmed ticker — it
+will not render a formula it cannot fully account for.
+
+Invented wording is refused, and the error lists what is accepted. Restate it rather than
+working around it: that refusal is what stopped a level being silently plotted as a
+percent change.
+
+### Recession shading
+
+> **You:** Add recession bands.
+
+> **You:** Drop the recession bands.
+
+### Lag and lead
 
 > **You:** Lag the survey by three months so the lead-lag lines up.
 
-*(That is a `lag` of `[-3]` on the slot. `[-n]` lags, `[+n]` leads — a lagged line
-extends the right edge, which is intended.)*
+`[-n]` lags, `[+n]` leads. A lagged line extends past the other series on the right edge;
+that is intended, not a bug.
+
+### Chart shape
 
 > **You:** Make the second series bars instead of a line.
 
-*(`plot_kind="bar"`; `"stacked_bar"` for contribution charts.)*
+Bars for a bar or column chart, stacked bars for a contribution chart. Worth a glance at
+the source: before 2026-07-30 the pipeline could not represent this at all and quietly
+redrew every bar chart as lines.
 
-> **You:** No title at all, just the chart.
+### After any change
 
-*(`no_title=true`. The subtitle stays, because it carries the transform label.)*
+Re-check the last plotted value against the source chart, especially after a transform or
+an axis change. A wrong result still looks like a perfectly plausible chart, and the last
+value is the cheapest thing that disagrees with it.
 
 ## Example D — checking the reconstruction is actually right
 
