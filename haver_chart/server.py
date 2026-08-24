@@ -28,17 +28,11 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-# On a laptop the three path variables arrive in the `env` block Claude Desktop injects
-# (written by `configure.py`). A server has no MCP client spawning it, so that mechanism
-# has no analogue and the environment has to come from a file instead (§14.8). Safe to
-# do unconditionally: `load_dotenv` does NOT override a variable already in the process,
-# so the injected block still wins on a teammate's machine and stdio is unchanged.
-# Absent `config/.env` is the normal case, not an error — `load_dotenv` just returns False.
-try:
-    from dotenv import load_dotenv             # noqa: E402
-    load_dotenv(_REPO_ROOT / "config" / ".env")
-except ImportError:                            # degrade, don't die: only the catalog needs it
-    print("[haver-chart] python-dotenv not installed; config/.env not read", file=sys.stderr)
+# Reads `config/.env` and resolves the three relocatable paths as a side effect of the
+# import. Done explicitly and early — `lane` below would trigger it anyway, but
+# `HTTP_ENABLED` and `_build_auth` depend on the file having been read, and an ordering
+# dependency that subtle should not rest on the import graph staying as it is today.
+from haver_chart import bootstrap                 # noqa: E402,F401
 
 from fastmcp import FastMCP                       # noqa: E402
 from fastmcp.exceptions import ToolError          # noqa: E402

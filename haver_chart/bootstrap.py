@@ -23,6 +23,7 @@ Three jobs, all of which have to happen BEFORE the wrapped modules are imported:
 from __future__ import annotations
 
 import contextlib
+import os
 import sys
 from pathlib import Path
 
@@ -33,6 +34,65 @@ SCRIPTS = REPO_ROOT / "scripts"
 for _p in (SRC, SCRIPTS):
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
+
+
+# --- The three relocatable paths (G9e step 1) --------------------------------------
+# `render.py`, `haver_search.py` and `resolve.py` each read one variable AT IMPORT TIME,
+# defaulting to a path on the machine this repo was written on. Both steps below must
+# therefore run before those modules are imported, which is why they execute at module
+# scope here rather than in a function a caller has to remember to invoke.
+
+# Teammate zip layout: this file is <pkg>/repo/haver_chart/bootstrap.py.
+_PKG_ROOT = REPO_ROOT.parent
+_VENDORED = {
+    "ECON_TEMPLATES_CHARTS": _PKG_ROOT / "vendor" / "charts",
+    "HAVER_MCP_SERVER": _PKG_ROOT / "vendor" / "haver_mcp" / "server",
+    "CLARIFIED_KNOWLEDGE_DIR": _PKG_ROOT / "knowledge",
+}
+
+#: Variables filled in from the package layout, for `selftest.py` to report honestly —
+#: otherwise an adopted path is indistinguishable from one the operator actually set.
+ADOPTED_FROM_PACKAGE: set[str] = set()
+
+
+def _load_env_file() -> None:
+    """Read `config/.env` if present.
+
+    On a laptop the paths arrive in the `env` block Claude Desktop injects. A server has
+    no MCP client spawning it, so its environment has to come from a file (§14.8). Safe
+    unconditionally: `load_dotenv` never overrides a variable already in the process, so
+    the injected block still wins and stdio is unchanged. An absent file is the normal
+    case, not an error.
+    """
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(REPO_ROOT / "config" / ".env")
+    except ImportError:          # degrade, don't die: only the catalog needs it
+        print("[haver-chart] python-dotenv not installed; config/.env not read",
+              file=sys.stderr)
+
+
+def _adopt_vendored_paths() -> None:
+    """Point any unset variable at the copy vendored inside the package.
+
+    The defaults in `src/` are absolute paths on ONE developer's machine, so without
+    this the lane runs only where something supplies all three by hand. That gap hides
+    in normal teammate use — Claude Desktop injects them — and surfaces the moment
+    anything else drives the lane: `selftest.py` from a shell, or a server started
+    directly. Since the zip already carries these files, requiring the operator to
+    re-state where they are is a configuration step that can only be got wrong.
+
+    Probing for the directory keeps this inert in the source checkout, which has no
+    `vendor/` sibling, and an explicit variable always wins over the probe.
+    """
+    for var, path in _VENDORED.items():
+        if not os.environ.get(var) and path.is_dir():
+            os.environ[var] = str(path)
+            ADOPTED_FROM_PACKAGE.add(var)
+
+
+_load_env_file()
+_adopt_vendored_paths()
 
 
 @contextlib.contextmanager

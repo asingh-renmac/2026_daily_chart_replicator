@@ -16,6 +16,11 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
+# Must precede section 2, which reports on the environment this import establishes.
+# Importing it here rather than letting `lane` pull it in later is the difference
+# between the selftest checking the real configuration and checking a bare shell.
+from haver_chart import bootstrap  # noqa: E402
+
 # Modules the chat lane must never pull in (§13.5). ingest/classify are the email
 # front end, ledger/teams/approval the Teams round-trip, propose the Opus drafting —
 # all replaced by the conversation. Importing one would drag Graph credentials and
@@ -60,7 +65,12 @@ for var, default, consequence in (
      "degrades — no learned binds or ratified legends; label every series explicitly"),
 ):
     path = Path(os.environ.get(var, default))
-    source = "env" if os.environ.get(var) else "default"
+    if var in bootstrap.ADOPTED_FROM_PACKAGE:
+        source = "package"          # vendored in the zip and found without being told
+    elif os.environ.get(var):
+        source = "env"
+    else:
+        source = "default"
     if var == "ECON_TEMPLATES_CHARTS":
         check(path.is_dir(), f"{var} resolves ({source})",
               str(path) if path.is_dir() else f"MISSING {path} -> {consequence}")
