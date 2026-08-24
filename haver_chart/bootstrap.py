@@ -73,7 +73,8 @@ def _load_env_file() -> None:
 
 
 def _adopt_vendored_paths() -> None:
-    """Point any unset variable at the copy vendored inside the package.
+    """Point a variable at the copy vendored inside the package when it is unset, or
+    set to somewhere that no longer exists.
 
     The defaults in `src/` are absolute paths on ONE developer's machine, so without
     this the lane runs only where something supplies all three by hand. That gap hides
@@ -82,13 +83,27 @@ def _adopt_vendored_paths() -> None:
     directly. Since the zip already carries these files, requiring the operator to
     re-state where they are is a configuration step that can only be got wrong.
 
+    A variable pointing at a missing directory is treated as absent rather than
+    honoured. Moving the package after setup leaves exactly that — Claude's config
+    still holds the old absolute paths — and it is the difference between a startup
+    crash on `renmac_chart_style` and a lane that simply keeps working. An explicit
+    path that RESOLVES always wins; the substitution is announced on stderr, because
+    quietly using different files than you were told to is its own kind of bug.
+
     Probing for the directory keeps this inert in the source checkout, which has no
-    `vendor/` sibling, and an explicit variable always wins over the probe.
+    `vendor/` sibling.
     """
     for var, path in _VENDORED.items():
-        if not os.environ.get(var) and path.is_dir():
-            os.environ[var] = str(path)
-            ADOPTED_FROM_PACKAGE.add(var)
+        current = os.environ.get(var)
+        if current and Path(current).is_dir():
+            continue                                   # explicit and real
+        if not path.is_dir():
+            continue                                   # nothing vendored to offer
+        if current:
+            print(f"[haver-chart] {var}={current} does not exist; falling back to the "
+                  f"copy in this package ({path})", file=sys.stderr)
+        os.environ[var] = str(path)
+        ADOPTED_FROM_PACKAGE.add(var)
 
 
 _load_env_file()

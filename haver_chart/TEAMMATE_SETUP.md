@@ -140,7 +140,13 @@ This resolves a real series and renders a real PNG. Read the last line: if it sa
 checks passed, the **server** is fine. It does not write Claude's config. If the
 selftest is green and Claude still has no tools, you missed step 4 or the restart.
 
-Individual `WARN` lines are survivable and say what you lose.
+Section 2 lists where the three external folders were found. `(package)` means the copy
+inside this zip, which is the normal answer and needs no action. `(env)` means something
+told it otherwise, and is also fine.
+
+Individual `WARN` lines are survivable and say what you lose. A `WARN` on
+`CLARIFIED_KNOWLEDGE_DIR` is the common one: it means `P:` was not reachable, so you get
+generic legend labels until you map the drive.
 
 ## 6. Restart Claude Desktop properly
 
@@ -204,7 +210,8 @@ tomorrow. Tell Aman — one approval on his side fixes it for the whole team.
 | Claude doesn't list the tools | the `haver-chart` block is missing from the config, or Claude did not restart | paste the JSON from `configure.py --show` via Settings → Developer → Edit Config (step 4); quit from the tray |
 | "catalog unavailable"; everything parks | no or bad Neon URL | re-run `configure.py --neon-url "..."` |
 | Series bind but legends are generic | `P:` not reachable | map the drive, restart Claude |
-| Import error on `renmac_chart_style` | package folder was moved after setup | re-run `configure.py` from the new location |
+| Import error on `renmac_chart_style` | the package folder was moved *and* the copy inside it is gone too | re-unzip, then re-run `configure.py` from the new location |
+| Moved the folder and it still works | the lane fell back to the copy inside the package and said so on stderr | nothing is broken, but re-run `configure.py` so Claude's paths match reality |
 | A render fails with a transform error | you used an unsupported wording | the error lists the accepted wordings; use one |
 
 The selftest is the fastest triage: run it first, and only debate Claude's config if it
