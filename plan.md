@@ -2195,3 +2195,128 @@ title. A parity harness that has only ever been shown to pass is not evidence.
 
 **G10f is not closed by this.** The harness exists; the gate needs a PNG that has
 actually crossed the tunnel.
+
+---
+
+### 14.22 Production host — leaving the AVD (PROPOSAL, 2026-08-25)
+
+G10i stays **DECIDED — remain on the pilot** until this section is signed off. The
+connectors work; the AVD does not. Three processes (chart, data, `cloudflared`) run in
+foreground windows that die with the session, the host is pooled, and idle policy can
+sign the session out. That is why a dedicated always-on Windows VM is the destination,
+and why it is a separate decision from "the tools work."
+
+**Do not start this until three things land.** The overnight watch (G10b's outstanding
+half, §14.9(b)) measures whether DLX survives a disconnected session — a dedicated VM
+that still needs someone logged in is just a more expensive AVD. G10f needs a real
+connector PNG, because a host that draws different pixels is not a replacement. And G17e
+(co-tenancy of the two processes against one DLX) should be measured on the AVD first,
+where a failure is cheap.
+
+#### Why a dedicated VM, not a bigger AVD
+
+AVD is a *session host*. The product is a signed-in desktop; the MCP servers are
+passengers. A production host is the opposite: nobody is looking at it, Windows Update
+and a weekly DLX sign-in are the only reasons a human logs on, and the three processes
+must survive a reboot as services. Putting more RAM on the AVD does not change any of
+that.
+
+DigitalOcean and most other VPS vendors are Linux-only. DLX is Windows-only. Azure (or
+another Windows-capable cloud with Hybrid Benefit) is the viable path; the AVD
+subscription already has the tenancy and the Entra tenant.
+
+#### Minimum specification
+
+The two servers serialize their own work (one render lock, one pull lock), so extra
+cores buy almost nothing until a second assigned name is live and concurrent. Memory is
+the constraint: matplotlib's Agg canvas is ~1700×1220×4 bytes per render, Haver holds
+a COM session, and two Python processes plus `cloudflared` sit together.
+
+| Resource | Minimum | Why that number |
+|---|---|---|
+| OS | Windows Server 2022 Datacenter | DLX is Windows-only; Server, not a desktop SKU, so it can run as a service without a logged-in session |
+| CPU | 2 vCPU | Renders and pulls are serialized; 2 is enough for Python + tunnel + OS |
+| RAM | 8 GB | 4 GB will page during a render; 8 GB leaves headroom for two processes |
+| Disk | 128 GB SSD (OS + data) | Windows Server + Python + Haver + 14 days of uniquely-named PNGs. `CHAT_RETENTION_DAYS` caps growth |
+| SKU | Azure `Standard_B2ms` (2 vCPU / 8 GB) | Burstable is correct: load is a few tool calls an hour, not a sustained render farm. Step up to `D2s_v5` only if B-series CPU credits exhaust |
+| Network | No inbound ports. Outbound 443 + UDP 7844 | Same Cloudflare tunnel as the AVD; the VM needs no public IP if the tunnel is the edge. A public IP is optional and costs extra |
+| Identity | A dedicated domain account that can sign in to DLX | Do not run as `LocalSystem` — DLX auth is per-user and that account has no profile |
+
+**Cost, East US, always-on, indicative 2026 numbers, not a quote.** `B2ms` compute with
+Azure Hybrid Benefit (Windows licence already owned) is about **$60–70/month**. Without
+Hybrid Benefit the Windows surcharge roughly doubles it. Add ~$8 for a 128 GB managed
+disk and ~$4 if a public IP is attached. Reserved 1-year + Hybrid Benefit is the
+sensible buy once the host is depended on. Confirm eligibility for Hybrid Benefit
+before provisioning — it is a licensing question, not a portal toggle you discover
+later.
+
+Do **not** oversize "for the future." The lock serializes work; a D4s does not render
+two charts at once. Scale when a second name is assigned and G17e has a number, not
+before.
+
+#### What moves, and what stays
+
+Moved onto the VM, as a service, not a foreground window:
+
+- `haver-chart` on `127.0.0.1:8100`
+- `haver-data` on `127.0.0.1:8101`
+- one `cloudflared` process with both hostnames in `config.yml`
+- a **local** copy of the four knowledge-store JSON files (not `P:`)
+- `config/.env` for each lane (Entra values, Neon URL, signing keys)
+
+Unchanged, on purpose:
+
+- The Entra app, the two redirect URIs, the Cloudflare tunnel UUID and DNS records.
+  Changing the origin from AVD to the VM is a `cloudflared` credentials copy plus a
+  `tunnel run` on the new host — the public URLs stay `chart.hvr-mcp.work` and
+  `data.hvr-mcp.work`, so no teammate re-adds a connector.
+- The daily lane. It does not run here (§14.13 Q2). A separate checkout, its own
+  `outputs/`.
+- Local stdio on anyone's DLX laptop. This host replaces the AVD, not the teammate zip.
+
+#### Build order
+
+1. **Overnight watch on the AVD** (§14.9(b), steps below). A FAIL here changes the
+   host story (always-on is not enough if DLX demands an interactive session).
+2. **Provision the VM.** East US, `B2ms`, Windows Server 2022, Hybrid Benefit if
+   eligible, no inbound NSG rules except whatever RDP you need to sign in to DLX on
+   Saturdays. Attach it to the existing Entra tenant so the same account can RDP.
+3. **Install the stack once, as the DLX user.** Python 3.12, `haver`, both venvs, both
+   packages, `cloudflared`, a local `knowledge\` copy. Run `selftest.py` (41/41) and
+   `haver_data/selftest.py` (six `LR@USECON` values) *before* any service wrapper —
+   a service that fails at boot is harder to read than a window that prints why.
+4. **Copy the Cloudflare credential and `config.yml`.** Same tunnel ID, same ingress.
+   `cloudflared tunnel run` in the foreground first; `curl` both `/health` URLs from a
+   phone. Only then install `cloudflared` as a Windows service
+   (`cloudflared service install`).
+5. **Wrap the two Python servers as Windows services.** NSSM or a scheduled task at
+   startup, running as the DLX user, with the working directory set to each repo root
+   so `config/.env` resolves. Confirm they survive RDP disconnect *and* a reboot.
+   `/health` must still answer after both.
+6. **Cut over.** Stop the AVD copies. The tunnel can only have one `cloudflared`
+   running against it; two origins fighting is a flapping hostname, not a failover.
+   Connectors do not change. Pull `LR@USECON` and render one chart from claude.ai to
+   prove the new origin, not the old one.
+7. **Decommission the AVD copies.** Leave the AVD itself until G10b/G10f/G17e are
+   closed in writing — it is still the cheapest place to reproduce a failure.
+
+#### Operating model that does not exist on the AVD
+
+- **Weekly DLX sign-in** stays. Saturday night, RDP to the VM, open the DLX app, sign
+  in, disconnect. The service account's credential is what both servers use.
+- **Secret rotation.** One Entra client secret, two `.env` files, two service restarts.
+  Diary the expiry.
+- **Knowledge freshness.** The VM's `knowledge\` is a copy. Either a scheduled pull
+  from `P:\Public\RenMac_Chart_Knowledge` or a reminder when labels drift. Pointing
+  the service at `P:` directly is still wrong (`load_legend` treats a share hiccup as
+  `{}`).
+- **Patch Tuesday.** A reboot is now a real event: services must come back on their
+  own. That is the test in step 5, not a hope.
+
+#### Gates this section would add, if approved
+
+| Gate | What it proves |
+|---|---|
+| G10k | Overnight watch (G10b remaining half) recorded a duration |
+| G10l | VM `/health` answers after a reboot with nobody logged in |
+| G10m | Cutover: same public URLs, connectors unchanged, one live pull + one live render from a phone |
