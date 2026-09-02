@@ -51,10 +51,14 @@ supply from memory bypasses all of it.
    real descriptor, keeping qualifiers that change meaning (SA/NSA, units, base year).
    Draft the title from the user's commentary if they gave you any.
 
-5. **Show the image and ask.** The render is the approval gate — the whole reason this
-   lane exists is that the user sees the pixels before the chart is used. Then check the
-   reconstruction against the last value the source chart shows. If they disagree,
-   something is bound or transformed wrong; say so rather than explaining it away.
+5. **Show the image, print the link, and ask.** The render is the approval gate — the
+   whole reason this lane exists is that the user sees the pixels before the chart is
+   used. Write the `chart_url` (or `path` on a local install) into your reply as well,
+   one line per chart: this client collapses the inline image into a closed panel, so a
+   link you did not print is a chart the user cannot reach. After a batch of renders,
+   list every link, not just the last. Then check the reconstruction against the last
+   value the source chart shows. If they disagree, something is bound or transformed
+   wrong; say so rather than explaining it away.
 
 ## When a tool raises
 

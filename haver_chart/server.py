@@ -38,6 +38,7 @@ from fastmcp import FastMCP                       # noqa: E402
 from fastmcp.exceptions import ToolError          # noqa: E402
 from fastmcp.tools.tool import ToolResult         # noqa: E402
 from fastmcp.utilities.types import Image         # noqa: E402
+from mcp.types import TextContent                 # noqa: E402
 
 from haver_chart import lane                      # noqa: E402
 
@@ -261,8 +262,12 @@ def render_chart(
     Never touches the daily lane's renders or ledger. On stdio the result carries the
     PNG's `path` on this machine. Over HTTP it carries a `chart_id` and a `chart_url`
     instead, because the file is on the server and a path would be meaningless to the
-    person reading it — GIVE THE OPERATOR THE `chart_url` when they want a copy to keep,
-    since the inline image is for looking at, not for putting in a document.
+    person reading it.
+
+    ALWAYS PRINT THE `chart_url` (or `path`) IN YOUR REPLY, ONE LINE PER CHART. This
+    client collapses the inline image into a closed tool panel, so a chart whose link
+    you did not write out is one the operator can neither see nor keep. After rendering
+    several charts, list every link — not only the last one.
     """
     try:
         out = lane.render(
@@ -291,8 +296,32 @@ def render_chart(
                                 + f"/chart/{summary['chart_id']}")
     else:
         summary["path"] = out["path"]
-    return ToolResult(content=[Image(path=out["path"]).to_image_content()],
-                      structured_content=summary)
+    # Image alone is not enough: Claude's connector forwards `content` to the model and
+    # often drops `structured_content`. The model then honestly says it has no link —
+    # which is what happened after the GET route was already serving 200s. Mirror the
+    # WHOLE summary into text, which is what the MCP spec recommends anyway so that a
+    # client reading only one of the two fields loses nothing. It also defuses the
+    # inverse client bug, where a present `structured_content` makes `content` — images
+    # included — get dropped.
+    #
+    # The instruction rides in-band deliberately. A tool description is read once per
+    # connection and a skill does nothing until someone installs it; this text arrives
+    # with EVERY result, so it is the only guidance that cannot be skipped. It has to
+    # exist because the client collapses the image into a closed tool panel: a chart
+    # whose link the model never printed is a chart the operator cannot see.
+    link_key = "chart_url" if HTTP_ENABLED else "path"
+    ordered = [link_key] + [k for k in summary if k != link_key]
+    lines = [f"{k}: {summary[k]}" for k in ordered]
+    lines.append(
+        f"ACTION REQUIRED — print the {link_key} above in your reply to the operator, "
+        f"one line per chart. The inline image is collapsed by default in this client, "
+        f"so an unprinted {link_key} is a chart they cannot reach. After rendering "
+        f"several charts, list every one, not only the last.")
+    note = TextContent(type="text", text="\n".join(lines))
+    return ToolResult(
+        content=[Image(path=out["path"]).to_image_content(), note],
+        structured_content=summary,
+    )
 
 
 if __name__ == "__main__":

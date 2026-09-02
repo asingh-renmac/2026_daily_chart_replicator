@@ -28,6 +28,11 @@ Show me the rendered image and wait for me before treating the chart as done, an
 reproduce the last value the source chart prints. If the numbers disagree, tell me
 plainly — something is bound or transformed wrong.
 
+Always write the chart link into your reply — `chart_url`, or `path` on a local
+install — one line per chart. The inline image sits in a collapsed panel, so a link you
+did not print is a chart I cannot open. If you rendered three charts, I want three
+links.
+
 When a tool raises, the error is a guardrail. Report it and ask; do not route around it
 by simplifying the chart or substituting a different series. A rejected transform phrase
 comes back with the wordings that are accepted — use one of those rather than dropping
