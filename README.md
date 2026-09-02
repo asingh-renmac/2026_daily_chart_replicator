@@ -258,11 +258,12 @@ out, including the traps: the transform label cannot be suppressed, x-axis label
 fixed vocabulary rather than a date pattern, and a legend fixed in chat does not persist
 to the store.
 
-Setup, worked examples, and the guardrail reference: **`haver_chart/SETUP.md`**.
-Design and gates: `plan.md` §13 (remote lane: §14). Pre-flight check:
+**Agent / other-project handoff (read first):** [`haver_chart/HANDOFF.md`](haver_chart/HANDOFF.md) — what it is, both transports, tool contract, setup paths, examples.
+
+Worked rebuild + every post-render sentence: **`haver_chart/SETUP.md`**. Laptop zip: `TEAMMATE_SETUP.md`. HTTP host: `SERVER_SETUP.md`. Design and gates: `plan.md` §13 (remote: §14). Pre-flight:
 
 ```bash
-C:/Users/asingh/envs/shared-3.10/Scripts/python.exe haver_chart/selftest.py   # expects 37/37
+C:/Users/asingh/envs/shared-3.10/Scripts/python.exe haver_chart/selftest.py   # expects 41/41
 ```
 
 ---

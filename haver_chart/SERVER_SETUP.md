@@ -183,11 +183,21 @@ recycle does not send everyone back through the browser:
 python -c "import secrets; print(secrets.token_urlsafe(48))"
 ```
 
-Start it:
+Start it (live AVD path, recorded 2026-08-30):
 
 ```powershell
-C:\Users\<you>\envs\haver-chart\Scripts\python.exe C:\...\haver-chart\repo\haver_chart\server.py
+C:\Users\madz\envs\haver-chart\Scripts\python.exe C:\Users\madz\Work\asingh\haver-chart\repo\haver_chart\server.py
 ```
+
+Same host, user `madz`. Sibling packages:
+
+| Lane | Package directory | Port | Health |
+|---|---|---|---|
+| haver-chart | `C:\Users\madz\Work\asingh\haver-chart\repo\haver_chart` | 8100 | `https://chart.hvr-mcp.work/health` |
+| haver-data | `C:\Users\madz\Work\asingh\2026_haver_mcp\haver_data` | 8101 | `https://data.hvr-mcp.work/health` |
+| macrobond-data | `C:\Users\madz\Work\asingh\2026_macrobond_mcp\macrobond_data` | 8102 | `https://data.mbond-mcp.work/health` |
+
+`cloudflared` is `cloudflared tunnel run haver-chart-avd` (foreground).
 
 It prints `Streamable HTTP on 127.0.0.1:8100`. If a secret is missing it exits and names
 every variable it wanted — publishing an unauthenticated endpoint is the one failure that
