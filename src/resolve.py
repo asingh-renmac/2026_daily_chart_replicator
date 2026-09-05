@@ -764,6 +764,31 @@ def _hit_code(h) -> Optional[str]:
 # `magnitude` (Thous vs Mil), which is sharper than comparing parenthetical text.
 _DATA_BEARING = ("shortsource", "longsource", "startdate", "numobs",
                  "frequency", "aggtype", "magnitude", "datatype", "diftype")
+
+
+def _sa_of_descriptor(descriptor: str) -> str:
+    """Seasonal-adjustment status from the descriptor's UNITS parenthetical.
+
+    `Haver.metadata` has no SA field — the only signal is the `(NSA, Thous)` tail, and
+    `descriptor_exact` strips exactly that tail to make matching robust. So an SA/NSA
+    twin arrives as a descriptor-exact tie and, on every OTHER field, is identical:
+    `lapriv@labor` and `lapriva@labor` are both BLS, both 1052 observations from 1939,
+    both AVG, both magnitude 3. G19f caught this — the first reading of §15.2 assumed
+    units would surface as `magnitude` and separate them, and measurement says they do
+    not. Without this the tie-break would call an SA/NSA pair a mirror and bind one at
+    random, which is a silently wrong chart of exactly the kind §15 exists to prevent.
+
+    Token-level on the LAST parenthetical, so "Not Seasonally Adjusted" in a series
+    NAME cannot be mistaken for the units tag.
+    """
+    groups = re.findall(r"\(([^()]*)\)", descriptor or "")
+    if not groups:
+        return ""
+    tokens = {t.strip().lower() for t in re.split(r"[,;]", groups[-1])}
+    for tag in ("saar", "nsa", "sa"):
+        if tag in tokens:
+            return tag
+    return ""
 # Catalog bookkeeping, NOT properties of the data. `lanagra@usecon` and `lanagra@labor`
 # are the same BLS series, same 1052 observations from 1939, and differ ONLY on `group`
 # (E30 vs E40) and the minute they were refreshed. Treating either as evidence would
@@ -832,6 +857,10 @@ def mirror_differences(codes: list[str]) -> Optional[dict]:
         values = {c: _meta_value(m.get(field)) for c, m in metas.items()}
         if len(set(values.values())) > 1:
             diffs[field] = values
+    # Derived, because DLX does not expose it as a field of its own.
+    sa = {c: _sa_of_descriptor(_meta_value(m.get("descriptor"))) for c, m in metas.items()}
+    if len(set(sa.values())) > 1:
+        diffs["seasonal_adjustment"] = sa
     return diffs
 
 
@@ -843,6 +872,21 @@ def break_exact_tie(exact: list[dict]) -> tuple[Optional[dict], str]:
     is not evidence") stated a fact the operator could not act on, when the evidence to
     act on was one 200 ms call away."""
     codes = [v["code"] for v in exact]
+
+    # Two codes in ONE database are not mirrors, whatever their metadata says. A
+    # database does not hold the same series twice under two names, so the pair is two
+    # different series that happen to normalize to one descriptor — the `lapriv` /
+    # `lapriva` (NSA/SA) shape G19f surfaced. Checking this BEFORE the metadata
+    # comparison means the answer does not depend on having found a field that
+    # separates them, which is what let the SA case through the first time.
+    databases = [c.split("@")[-1].lower() for c in codes]
+    if len(set(databases)) < len(databases):
+        return None, (
+            f"{len(codes)} candidates match the descriptor exactly and live in the SAME "
+            f"database, so they are different series rather than mirrors — "
+            + "; ".join(f"{c} ({(haver_metadata(c) or {}).get('descriptor', '?')})"
+                        for c in codes))
+
     diffs = mirror_differences(codes)
 
     if diffs is None:

@@ -262,6 +262,31 @@ _pick, _why = _tie(["gone@usecon", "gone@bci"])
 check(_pick is None and "unavailable" in _why,
       "unreachable DLX metadata parks — it never falls back to a guess")
 
+# The G19f defect. An SA/NSA twin is descriptor-exact and IDENTICAL on every field DLX
+# exposes — same source, same 1052 observations from 1939, same AVG, same magnitude.
+# The first §15.2 assumed units would surface as `magnitude` and separate them; they do
+# not. Two guards now cover it, and the same-database one does not depend on having
+# found a discriminating field at all.
+lane.R._METADATA_CACHE.update({
+    "s@labor": dict(_BLS, descriptor="All Employees: Total Private (SA, Thous)"),
+    "sa@labor": dict(_BLS, descriptor="All Employees: Total Private (NSA, Thous)"),
+    "t@usecon": dict(_BLS, descriptor="All Employees: Total Private (SA, Thous)"),
+    "t@labor": dict(_BLS, descriptor="All Employees: Total Private (NSA, Thous)"),
+})
+check(lane.R._sa_of_descriptor("All Employees: Total Private (NSA, Thous)") == "nsa"
+      and lane.R._sa_of_descriptor("All Employees: Total Private (SA, Thous)") == "sa",
+      "SA status is read from the descriptor's units parenthetical")
+
+_pick, _why = _tie(["s@labor", "sa@labor"])
+check(_pick is None and "SAME database" in _why,
+      "two codes in ONE database are never mirrors, whatever the metadata says",
+      _why[:90])
+
+_pick, _why = _tie(["t@usecon", "t@labor"])
+check(_pick is None and "seasonal_adjustment" in _why,
+      "an SA/NSA pair ACROSS databases parks on seasonal adjustment, not binds usecon",
+      _why[:100])
+
 
 # ── §15.3 chat memory ────────────────────────────────────────────────────────────
 # Redirected to a temp directory: these must never write the shared store, and a test

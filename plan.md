@@ -2562,14 +2562,38 @@ aggregation, and differ **only** on `group` (E30 vs E40) — a catalog filing ta
   schedule. It only ever chooses between two `usecon` candidates, where the fresher wins.
 
 `diftype` was added to the data-bearing list: the plan enumerated both lists and it
-appeared in neither, but it describes the series' difference basis. **SA status needs no
-field of its own** — it lives in the descriptor's units parenthetical, and units surface
-as `magnitude` (Thous vs Mil), which is sharper than comparing text. This still closes the
-`_UNIT_TOK` hole: an SA and NSA twin that both come back exact will differ on
-`numobs`/`startdate` or `magnitude`.
+appeared in neither, but it describes the series' difference basis.
 
-**Resolution, in order:** fetch `Haver.metadata` for tied candidates only (cached per
-process) → any data-bearing field differs, **park** and show which (decision D2) → all
+**SA status needed a field of its own after all — corrected 2026-09-05 by G19f.** The
+first reading of this section argued that SA needs no field, because it lives in the
+descriptor's units parenthetical and units surface as `magnitude`. That was **measurably
+wrong**, and G19f is what caught it. `lapriv@labor` (NSA) and `lapriva@labor` (SA) are
+both BLS, both 1052 observations from 1939-01-31, both `AVG`, both magnitude 3, both
+`Units`, both monthly. `Haver.metadata` has **no SA field at all**, and
+`descriptor_exact` strips the very parenthetical that carries it. So an SA/NSA twin
+arrived as a descriptor-exact tie that was identical on all nine data-bearing fields —
+i.e. it read as a perfect mirror, and the tie-break would have bound one at random.
+
+Two guards now cover it, and the order matters:
+
+1. **Two codes in the SAME database are never mirrors.** A database does not hold one
+   series twice under two names, so the pair is two different series that happen to
+   normalize to one descriptor. This is a structural invariant, so it does not depend on
+   having found a field that separates them — which is exactly what let the SA case
+   through the first time.
+2. **`seasonal_adjustment`, derived** from the descriptor's last parenthetical at token
+   level (so "Not Seasonally Adjusted" inside a series NAME cannot be mistaken for the
+   units tag), is compared as data-bearing.
+
+**What this prevented, measured.** Before the fix, "All Employees: Total Nonfarm" bound
+`lanagr@usecon` — which is the **NSA** series — for chart 5, a payroll-momentum chart
+that plainly wants SA. It now parks and asks. That is one fewer chart bound and one fewer
+chart *wrong*, which is the trade this whole section is built on.
+
+**Resolution, in order:** candidates sharing a database, **park** (they cannot be
+mirrors) → fetch `Haver.metadata` for tied candidates only (cached per
+process) → any data-bearing field differs, including derived seasonal adjustment,
+**park** and show which (decision D2) → all
 match, **bind the `usecon` copy** (its presence in the tie is the evidence the request is
 US-scoped, so this can never reach for `usecon` on a non-US request) → true mirrors with
 no `usecon`, **park**; do not invent an ordering between `labor` and `empl`.
@@ -2682,9 +2706,31 @@ have been asked. The parked-slot widget (§16) stays after all of it.
 | G19c | **MET.** `transform_key` derives from the slot formula; 142 ledger slots replayed with 0 labels lost and 0 swapped |
 | G19d | **MET.** A true database mirror binds; genuinely different series still park, naming the differing fields |
 | G19e | **MET.** Unreachable DLX metadata parks rather than guessing |
-| G19f | Park count AND quality on `fixtures/g19f_baseline_commentary.md`. Judge quality, not only count: every park must name the evidence that separates its candidates. Charts 5, 8, 10 are the compound-transform cases; chart 7 the two-transforms-one-ticker legend case; chart 4 the §15.1d window-unit case |
+| G19f | **RUN 2026-09-05, and it earned its keep.** 18 slots: 2 bound, 16 parked, 11 of the 16 naming their evidence. **All 18 transform phrases mapped** — `movv(diff(X,1),3)` for the charts 5/8 compounds and `difa%(X,2)` for chart 4, none silently truncated. Its real value was catching the SA/NSA mirror defect above, which would have plotted NSA payrolls on chart 5. The 5 remaining unanswerable parks are all on the SIMILARITY path ("19 descriptor-similar candidates — human disambiguates"), which §15.2 never touched — see §15.7 |
 | G19g | **MET.** `forget_binding` removes a chat-store entry and the next resolve re-asks |
 | G19h | **MET.** A park resolved in one chat is not re-asked in the next, same operator; the chat entry overrides the daily entry it shadows. Proved end to end against live DLX: "Personal Saving Rate" parks, is remembered as `YPSVR@USECON`, and binds from memory in a fresh module state |
+
+### §15.7 What G19f says is left (PROPOSAL)
+
+Two things, neither of which §15 set out to fix, both now measured rather than guessed.
+
+**The similarity path parks without evidence.** Five of the sixteen parks say only "19
+descriptor-similar candidates — human disambiguates". The candidate list IS returned, so
+the operator is not stuck, but the message names nothing about WHY the resolver could not
+choose — it does not even say that no candidate matched exactly. §15.2 gave the
+exact-tie path real evidence; the similarity path still has none. The same
+`Haver.metadata` call would serve it.
+
+**The bind rate is low, and that is mostly the descriptors.** Only 2 of 18 bound, because
+a commentary names series the way an economist says them ("Aggregate Weekly Payrolls:
+Total Private", "Federal Funds Target Rate") rather than the way Haver spells them. This
+is the case §15.3 exists for: each park is answered once and then remembered. The gate to
+watch is not the first-run bind rate, it is the SECOND run over the same commentary.
+
+**One bind worth a human look:** "Civilian Unemployment Rate" binds `a0m043@bci`, the
+Conference Board's copy, rather than the BLS series most readers would assume. It is a
+genuine exact match and correctly SA, so nothing is broken, but it is the kind of default
+worth ratifying deliberately.
 
 ### §15.6 Process note — there are TWO test suites
 
