@@ -2320,3 +2320,372 @@ Unchanged, on purpose:
 | G10k | Overnight watch (G10b remaining half) recorded a duration |
 | G10l | VM `/health` answers after a reboot with nobody logged in |
 | G10m | Cutover: same public URLs, connectors unchanged, one live pull + one live render from a phone |
+
+## §15. Resolver repair — words→formula, mirror tie-break, chat memory
+
+Two complaints from 2026-09-04, which turn out to have one root between them and one
+that is separate:
+
+1. **"It parks slots that are exact matches."** True, and the resolver was *right* about
+   the specific slots — but for a reason it could not articulate, which made the park
+   unanswerable. §15.2.
+2. **"It will not apply a transformation I described in words; it demands a Haver
+   formula."** Also true, and worse than it looked: the mapper did not refuse, it
+   silently plotted *half* the transform. §15.1.
+
+Neither is fixed by loosening a threshold. Both are fixed by getting evidence to the
+place that makes the decision.
+
+### §15.1 Phase 1 — natural language cannot reach a nested formula
+
+The evaluator (`src/transforms.py`) is fully compositional and handles arbitrarily deep
+nesting. The phrase translator (`build_chart.phrase_to_haver`) was flat, with exactly one
+hard-coded composition. That asymmetry is the whole defect: the machinery to *evaluate*
+`zs(yryr%(x))` has always existed, and only the path from words to that string was
+missing.
+
+The failure mode is not a refusal. `_flat_transform` matches the FIRST operation it
+recognizes in the phrase and returns, so a compound phrase produced a real formula that
+was quietly missing half its math:
+
+| Phrase | Produced | Should have been |
+|---|---|---|
+| `"3-month moving average of the monthly change"` | `movv(X,3)` — a 3mma of the **level** | `movv(diff(X,1),3)` |
+| `"% Change - Year to Year, Z-Score"` | `zs(X)` — a z-score of the **level** | `zs(yryr%(X))` |
+| `"zs(difa%(movv(...,3),3))"` | `diff%(X,3)` — **unrelated math** | (raise: it is a formula) |
+
+Each plots a plausible-looking line. That is what makes this class dangerous and why the
+fix is a grammar plus a loud failure, not a bigger table.
+
+#### §15.1a `transform_key` must be fixed FIRST — DONE 2026-09-04
+
+`resolve.transform_key` derived the legend-store key from the *phrase*, wrapped in a bare
+`except` falling back to `""`. Two consequences, the second of which fixes the ordering:
+
+1. **Pre-existing under-qualification.** For a compound-phrase slot the key was weaker
+   than the math — `ZS(#)` where the formula was `zs(yryr%(GDPH))`. A later plain
+   `zs(gdph)` level chart would inherit that label: the 2026-07-30 collision class
+   (one ticker, two transforms, one key) reintroduced through the phrase.
+2. **A new raise would silently orphan those keys.** Because the `except` swallows it,
+   `phrase_to_haver` raising does not crash — it empties the transform key, changes the
+   legend key, and shifts legend text on charts that currently look right.
+
+Fix: canonicalize the slot's **own `formula`** when it has one, falling back to the
+phrase only when it does not. `render_row` ignores `applied_transform` once a formula is
+present, so the formula is what was actually drawn and therefore the honest source.
+
+Composite operands collapse to a single `#`: the tag names the transform CHAIN, and which
+series it wraps already lives in `legend_key_base` as `expr:NFIB7-NFIB6`. Without that
+collapse every warmed composite key would shift from `ZS(#)` to `ZS((#-#))`. The collapse
+must also tell a function's argument parens from a grouping paren — conflating them emits
+the malformed `ZS(YRYR%#)`.
+
+**Migration — the estimate of "3 entries" was low; the measured answer is 8.**
+`scripts/migrate_legend_keys.py` replays every slot in `data/ledger_*.csv` through both
+the old and new key functions and re-files only where the store holds the old key.
+
+| | count |
+|---|---|
+| distinct legend keys in the ledger | 130 |
+| keys UNCHANGED by the fix | 111 |
+| keys that move | 19 |
+| ...of which the store holds a label → re-filed | **8** |
+| ...of which the store holds nothing → nothing to carry | 11 |
+
+Every one of the 8 was holding a label that already *described* the transform its key had
+dropped — the defect stated in evidence rather than theory:
+
+| Entry | Re-filed as | Label it was holding |
+|---|---|---|
+| `GDPH@USECON\|ZS(#)` | `ZS(YRYR%(#))` | Real GDP **(y/y %chg)** |
+| `GDP@USECON\|ZS(#)` | `ZS(YRYR%(#))` | GDP **(y/y% chg)** |
+| `LAPRIVA@LABOR\|ZS(#)` | `ZS(YRYR%(#))` | All Employees: Total Private **(y/y% chg)** |
+| `FNEH@USECON\|YRYR%(#)` | `ZS(YRYR%(#))` | Real Nonres Fixed Invest: Equipment (y/y% chg) |
+| `JCSXEHM@USECON\|YRYR%(#)` | `ZS(YRYR%(#))` | PCE Core Svcs ex Housing (y/y %chg) — **copy, see below** |
+| `NFIB6@SURVEYS\|MOVV(#,3)` | `ZS(MOVV(#,3))` | NFIB: Net % Reporting Higher Sales (SA, 3mma) |
+| `FWILL@SURVEYS` *(unqualified)* | `ZS(#)` | Banks Willingness to Lend (%. lagged by 4qtrs) |
+| `YPSVR@USECON` *(unqualified)* | `ZS(YRYR(#))` | Personal Saving Rate **(Z-score of y/y difference)** |
+
+The last two carried **no transform qualifier at all** while holding a transformed label.
+A bare key is reachable through `lookup_legend`'s `allow_base` fallback, so a future
+*level* chart on `YPSVR` would have rendered "Z-score of y/y difference" over a plain
+saving-rate line.
+
+**Re-filing is not always a move.** `JCSXEHM@USECON|YRYR%(#)` was the key for two
+different slots: one carrying `zs(yryr%(JCSXEHM))`, which now asks for `ZS(YRYR%(#))`,
+and one phrase-only y/y slot, which still asks for `YRYR%(#)`. Moving it stranded the
+second on the bare base key, where it picked up the neighbouring `3m %chg saar` label —
+caught by the replay, not by reading. The script COPIES when the old key is still live in
+the new scheme and MOVES otherwise: 7 moves, 1 copy, store 79 → 80.
+
+**Regression proof.** All 142 distinct ledger slots looked up against the pre-migration
+store under old keys and the post-migration store under new keys: 89 had a label,
+**0 lost, 0 swapped**. A second `--apply` is a no-op.
+
+#### §15.1b The compositional parser — DONE 2026-09-04
+
+**Not** a corpus, **not** a lookup table, and nothing learned at runtime. A table cannot
+cover unbounded nesting; that is the failure mode a grammar does not have.
+
+*Atoms are finite and already written.* `_flat_transform` implements the closed Haver G3
+set — `MOV[V|T|A]`, `ZS`, `LN`, `YRYR`, `DIFA`, `DIFV`, `DIFF`, each with plain/percent/
+log variants. The parser reuses those rules and restates none of them.
+
+*Composition needs two rules, and they nest in opposite directions.* Ground truth from
+the ledger, not invention:
+
+| Marker | Direction | Evidence |
+|---|---|---|
+| `A of B` | B is inner → `A(B(x))` | `"Z-Score of Year-to-Year % Change"` shipped `zs(yryr%(X))` |
+| `A , B` / `A ; B` | left-to-right, A is inner → `B(A(x))` | `"% Change - Year to Year, Z-Score"` shipped `zs(yryr%(X))` |
+
+*The comma has two more senses, and missing either one breaks a phrase that works today:*
+
+- **A window.** `", 3-period"` in `"difa% of 3-term moving average, 3-period"` is an
+  argument of `difa%`, not another operation — so it attaches to the OUTERMOST segment
+  of the part before it, giving `difa%(movv(X,3),3)`.
+- **Punctuation inside ONE operation.** `"% change, year-over-year"` is a single y/y
+  percent change. A part that does not map on its own is a CONTINUATION of the part
+  before it, not a new operation.
+
+Both joins are only accepted if they **change the mapping**. If the head maps identically
+with and without the fragment, the fragment was ignored — which is the silent drop this
+parser exists to end. That single rule catches `"z-score of 6-month moving average,
+12-period"`, where `zs` takes no window and the `12` used to vanish.
+
+*Fail-loud is what makes an incomplete grammar safe* (decision D6). Any fragment that is
+not a recognized operation raises and **quotes itself**, so the operator knows which piece
+needs a formula rather than re-guessing the whole phrase. Coverage gaps degrade to
+today's behaviour, never to a wrong chart.
+
+*Routing preserves history.* A phrase with no composition marker takes the flat route
+untouched.
+
+**What the ledger actually contained.** 27 distinct phrases, classified by replaying each
+through the mapper and comparing with the formula that shipped beside it:
+
+| Class | Count | Before → after |
+|---|---|---|
+| flat, already correct | 17 | unchanged, byte for byte |
+| compound, silently truncated | 6 | now composed; all 6 match the shipped formula |
+| a transcribed formula, not a description | 3 | now a precise raise (decision D11) |
+
+**The one deliberate divergence** (decision D9). `"6-month %Change; z-score"` yields
+`zs(diff%(X,6))` where the ledger shipped `zs(difa%(PCUSERH,6))`. The words never say
+*annualized*, and the sibling phrase `"6-month %Change-ann"` — also in the ledger — does.
+Reading annualization in from silence is exactly the guess that produced the 2026-07-30
+GDP 3.35-vs-6.81 error. The parser stays faithful to the words; the `formula` field
+remains the override, which is how that row got its `difa%` in the first place.
+
+**"growth" is a percent change** (decision D10). Left out of the percent test it would
+have emitted an absolute difference on a phrase every economist reads as a rate.
+
+#### §15.1c The fixture — DONE 2026-09-04
+
+`fixtures/transform_phrases.json`: `phrase → expected formula`, **55 cases**, asserted by
+`selftest.py`. JSON rather than YAML so the test adds no dependency the AVD might lack.
+Seeded by extracting the ledger phrases automatically, then extended by hand with nesting
+the history does not contain — three deep in both directions, including the pair
+`"z-score of the 3-month moving average of the year-to-year % change"` and
+`"% change - year to year, 3-month moving average, z-score"`, which must produce the same
+formula through opposite markers.
+
+Each row carries a `source`: `ledger-flat` (pinned to the pre-parser output, the no-drift
+half of G19a), `ledger-compound` (pinned to the shipped formula), `workflow` (mirrored
+from `scripts/selftest_workflow.py`), or `hand`. Rows with `raises: true` are asserted to
+raise **and to quote the fragment they choked on**.
+
+**Read only by the test.** If the parser ever consults it at resolve time, this design has
+failed.
+
+#### §15.1d A window is stated in a UNIT; G3 counts it in PERIODS — DONE 2026-09-04
+
+Surfaced by the operator while ratifying D10, and it is the same silent-wrong class as the
+rest of §15.1. `difa%(x,2)` on a monthly series is a **two-month** annualized rate. A
+phrase reading `"2-quarter annualized growth"` bound to a monthly series therefore plotted
+something six times shorter than it said — far noisier, and plausible enough to pass
+review. Chart 4 of the G19f commentary is worded exactly this way.
+
+The series frequency now threads from `_freq_of` (already computed at the render site)
+through `_applied_formula` into the mapper, and a window naming a different unit converts:
+`2 x 12/4 = 6`. A window that will not divide evenly — two months of a quarterly series —
+raises rather than rounding to something the words did not say. With no frequency the
+number is taken literally, exactly as before.
+
+**Blast radius: zero.** All 65 historical (phrase, ticker) render pairs produce the
+identical formula with and without the conversion — every phrase in the history names the
+unit its series is sampled at, which is why this never bit.
+
+### §15.2 Phase 2 — two exact matches park with no tie-break — DONE 2026-09-04
+
+`resolve_slot` bound on `len(exact) == 1`. The Jaccard fallback sat under `elif not
+exact`, so **two** exact matches reached no branch at all and parked. Two exacts were
+served strictly worse than zero.
+
+Haver mirrors the same series across `usecon` / `bci` / `labor` / `empl` under a
+byte-identical descriptor, and `descriptor_exact` compares normalized token sets with the
+units parenthetical stripped — so the normalization that makes matching robust also
+guarantees mirrors are indistinguishable. There is no database preference anywhere in
+`src/`.
+
+#### The catalog metadata is too thin to judge a tie — Haver's own is not
+
+`haver_search.get_meta` returns **four** fields (descriptor, frequency, agg_type,
+sa_status). On those four the 2026-09-04 slot A looks like a perfect mirror, which is why
+an early reading concluded "auto-bind `usecon`". That was **wrong**. `Haver.metadata`
+returns **eighteen** and settles it:
+
+| field | `lrtmanua@usecon` | `a0m001@bci` |
+|---|---|---|
+| shortsource | **BLS** | **CB** (The Conference Board) |
+| startdate | 2006-03-31 | **1945-01-31** |
+| enddate | **2026-08-31** | 2026-07-31 |
+| numobs | 246 | **979** |
+
+**Two different series from two different statistical agencies.** The resolver was RIGHT
+to park slot A. The defect was never that it parks — it is that the park message ("both
+scored 1.0, similarity is not evidence") was *unanswerable*, when the evidence to answer
+it was one 200 ms call away. §15.2 is a **park-quality** change first and a park-reduction
+change second.
+
+#### Which fields discriminate, and which must not
+
+`LANAGRA@USECON` vs `LANAGRA@LABOR` match on source, start, end, obs count, descriptor and
+aggregation, and differ **only** on `group` (E30 vs E40) — a catalog filing tag. Treating
+`group` as discriminating would over-park a genuine mirror.
+
+- **Discriminating (data-bearing):** `shortsource`, `longsource`, `startdate`, `numobs`,
+  `frequency`, `aggtype`, `magnitude`, `datatype`, `diftype`.
+- **NOT discriminating (catalog bookkeeping):** `group`, `decprecision`, `datetimemod`,
+  the `geography` codes.
+- **`enddate` alone is not a difference** — a mirror can be refreshed on a different
+  schedule. It only ever chooses between two `usecon` candidates, where the fresher wins.
+
+`diftype` was added to the data-bearing list: the plan enumerated both lists and it
+appeared in neither, but it describes the series' difference basis. **SA status needs no
+field of its own** — it lives in the descriptor's units parenthetical, and units surface
+as `magnitude` (Thous vs Mil), which is sharper than comparing text. This still closes the
+`_UNIT_TOK` hole: an SA and NSA twin that both come back exact will differ on
+`numobs`/`startdate` or `magnitude`.
+
+**Resolution, in order:** fetch `Haver.metadata` for tied candidates only (cached per
+process) → any data-bearing field differs, **park** and show which (decision D2) → all
+match, **bind the `usecon` copy** (its presence in the tie is the evidence the request is
+US-scoped, so this can never reach for `usecon` on a non-US request) → true mirrors with
+no `usecon`, **park**; do not invent an ordering between `labor` and `empl`.
+
+#### Measured
+
+| Candidates | Verdict | Evidence |
+|---|---|---|
+| `lrtmanua@usecon` vs `a0m001@bci` | **PARK**, correctly | differ on `shortsource`, `longsource`, `startdate`, `numobs` |
+| `lanagra@usecon` vs `lanagra@labor` | **BIND `usecon`** | identical on all nine data-bearing fields |
+
+`Haver.metadata` measured at **~170–500 ms**, better than the 560 ms budgeted, and cached
+per process — a repeat tie resolves in 0 ms. Only slots that actually tie pay anything.
+
+**A failure mode the plan had not accounted for:** `Haver.metadata` answers a failed query
+with an **ErrorReport dict** rather than raising — the same shape behind the vague
+`haver-data` error. A truthiness check sails past it, so the dict is rejected explicitly.
+Unreachable metadata parks; it never degrades to a guess.
+
+Each tied slot carries `slot["tie_metadata"]` — the full eighteen fields per candidate —
+which is what the §16 picker will render as columns.
+
+#### Side benefit: the stale end-date problem
+
+`enddate` and `datetimemod` come from DLX itself, not the Neon catalog mirror, so this
+same call answers the long-standing "the catalog's end date is stale" complaint — for the
+park message today, and for the §16 picker later.
+
+### §15.3 Phase 3 — the chat lane cannot remember (the ratchet) — PROPOSAL
+
+`seal_stores` makes the stores read-only from chat (§13.6), so every park resolved by eye
+is forgotten at end of turn and tomorrow's commentary parks the same slots. Parks never
+amortize. That, not the park rate itself, is what makes the lane feel worse over time.
+
+**One collated store, referenced not copied.**
+
+- **File:** `chat_learned.<operator>.json` in `CLARIFIED_KNOWLEDGE_DIR`, alongside the
+  existing stores. **One file per operator** (decision D3), and within that operator
+  **one** file for all chats and all days — the server is a long-running process with no
+  concept of a chat session, so "a new chat" reads exactly the same file. It starts empty.
+- **Operator identity comes from Entra** (decision D12: build this now, not later). Over
+  HTTP the request is already authenticated, so the token subject names the file. On a
+  local stdio install there is no identity and no second operator, so the suffix is a
+  fixed `local`.
+- **Read-through, not a copy.** Lookup consults the chat store, then falls through to the
+  daily `learned` and `clarified` stores. Seeding by copy would freeze a snapshot and
+  drift from the daily lane.
+- **Writes are atomic** (temp file + replace) because two chats can be open at once.
+- **Written on** explicit park resolution AND on correction of a wrong auto-bind
+  (decision D5).
+- **`forget_binding` server tool** to remove an entry (decision D4), so a wrong answer is
+  revocable without hand-editing JSON on a share.
+
+Promoting a chat entry into the daily store stays out of scope, gated behind G9d.
+
+### §15.4 Build order
+
+1. **§15.1a `transform_key`** — **DONE.** Had to precede any new raise, or the legend keys
+   shift underneath it. 8 store entries re-filed, 0 labels lost.
+2. **§15.1b parser + §15.1c fixture** — **DONE.** 55 cases; 17 flat phrases byte-identical,
+   6 compound fixed against the ledger, 3 now raise.
+3. **§15.1d window units** — **DONE.** Zero blast radius on history.
+4. **§15.2 tie-break** — **DONE.** Mirrors bind `usecon`; different series park with the
+   evidence attached.
+5. **§15.3 chat store** — makes the remaining parks amortize.
+6. Run `fixtures/g19f_baseline_commentary.md` end to end and record park count and quality
+   (G19f).
+
+Ordering rationale: 1 unblocks 2; the migration in 1 must run BEFORE 2, because it
+reconstructs the old key using the *current* phrase mapper. 4 shrinks the park set that 5
+has to remember, and doing 5 first would build a memory of questions that should never
+have been asked. The parked-slot widget (§16) stays after all of it.
+
+### §15.5 Gates
+
+| Gate | What it proves |
+|---|---|
+| G19a | **MET.** The 17 flat historical phrases map byte-identically before/after the parser; the 6 compound ones map to the formula the ledger shows shipped; the 3 formula-shaped ones raise instead of guessing. Pinned in `fixtures/transform_phrases.json` and asserted by `selftest.py`, so it stays proved rather than proved-once. *(Restated: as first written this gate required all 27 to be byte-identical, which is self-contradictory — six of them were the defect.)* |
+| G19b | **MET.** A compound phrase the grammar cannot read RAISES and quotes the fragment; it never returns a partial transform |
+| G19c | **MET.** `transform_key` derives from the slot formula; 142 ledger slots replayed with 0 labels lost and 0 swapped |
+| G19d | **MET.** A true database mirror binds; genuinely different series still park, naming the differing fields |
+| G19e | **MET.** Unreachable DLX metadata parks rather than guessing |
+| G19f | Park count AND quality on `fixtures/g19f_baseline_commentary.md`. Judge quality, not only count: every park must name the evidence that separates its candidates. Charts 5, 8, 10 are the compound-transform cases; chart 7 the two-transforms-one-ticker legend case; chart 4 the §15.1d window-unit case |
+| G19g | `forget_binding` removes a chat-store entry and the next resolve re-asks |
+| G19h | A park resolved in one chat is not re-asked in the next chat, same operator |
+
+### §15.6 Process note — there are TWO test suites
+
+`haver_chart/selftest.py` (50 checks, live DLX) and `scripts/selftest_workflow.py`
+(254 checks, offline). Running only the first is how a comma-rule regression on
+`"moving average, 6-month"` — a phrase asserted in the second — reached a green board
+during this very section. Both must pass before any resolver change is claimed done. The
+phrase cases from the workflow suite are now mirrored into
+`fixtures/transform_phrases.json` so the two cannot drift silently.
+
+## §16. Interactive widgets — parked-slot picker (PROPOSAL, blocked on G20b)
+
+**Scope: the parked-slot picker only.** When a slot parks, render the candidates as a
+selectable list instead of asking the operator to retype a ticker into the chat. Columns
+come from `lane._candidates` plus `slot["tie_metadata"]` (§15.2): descriptor, database,
+source, start date, **live** end date, observation count, frequency. A free-text field
+covers the case where no candidate is right.
+
+**Why it comes last.** Most of the parks it would display should not exist — §15.1 and
+§15.2 remove the unwarranted ones and §15.3 stops the warranted ones from repeating. A
+picker built first would have been a nicer way to answer a question that no longer gets
+asked.
+
+**Explicitly rejected: the chart-edit widget.** Re-rendering from a form duplicates the
+whole chart spec in a second surface that must stay in sync with the renderer. Natural
+language already edits a chart in one turn, and the render is the approval gate.
+
+**Rejected: the series picker as a general pre-bind step.** Redundant with
+`resolve_series` and its candidate list.
+
+| Gate | What it proves |
+|---|---|
+| G20a | Three charts in one turn produce three `chart_url`s in the visible reply (AVD) |
+| G20b | **STOP.** A hello-world `ui://` resource survives the tunnel and Entra. If MCP Apps do not work through this transport, §16 does not proceed |
