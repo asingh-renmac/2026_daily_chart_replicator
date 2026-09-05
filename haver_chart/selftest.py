@@ -277,15 +277,54 @@ check(lane.R._sa_of_descriptor("All Employees: Total Private (NSA, Thous)") == "
       and lane.R._sa_of_descriptor("All Employees: Total Private (SA, Thous)") == "sa",
       "SA status is read from the descriptor's units parenthetical")
 
-_pick, _why = _tie(["s@labor", "sa@labor"])
-check(_pick is None and "SAME database" in _why,
-      "two codes in ONE database are never mirrors, whatever the metadata says",
-      _why[:90])
+check(lane.R._sa_of_descriptor("Total Nonfarm, Not Seasonally Adjusted (Thous)") == "",
+      "the SA tag is read from the units parenthetical, not from the series NAME")
 
-_pick, _why = _tie(["t@usecon", "t@labor"])
-check(_pick is None and "seasonal_adjustment" in _why,
-      "an SA/NSA pair ACROSS databases parks on seasonal adjustment, not binds usecon",
-      _why[:100])
+
+def _tie_sa(codes, want=""):
+    return lane.R.break_exact_tie(
+        [{"code": c, "descriptor": "", "sim": 1.0, "exact": True,
+          "via_query": "q", "agg": "AVG"} for c in codes], want)
+
+
+# D14: an SA/NSA pair is one series in two vintages, and the house picks SA.
+_pick, _why = _tie_sa(["s@labor", "sa@labor"])
+check(_pick is not None and _pick["code"] == "s@labor",
+      "D14: an SA/NSA pair in ONE database binds the SA copy rather than parking",
+      _why[:100] if _pick else f"PARKED: {_why[:80]}")
+check(_pick is not None and "NSA" in _why,
+      "and the reason tells the operator how to ask for the raw series instead")
+
+_pick, _why = _tie_sa(["t@usecon", "t@labor"], "nsa")
+check(_pick is not None and _pick["code"] == "t@labor",
+      "D14: an explicit NSA request binds the NSA copy", _why[:100])
+
+_pick, _why = _tie_sa(["t@usecon", "t@labor"])
+check(_pick is not None and _pick["code"] == "t@usecon",
+      "D14: unstated preference still means SA, across databases too")
+
+# The rule must not swallow a pair that differs on IDENTITY as well as on SA — that is
+# two different series, not two vintages of one.
+lane.R._METADATA_CACHE.update({
+    "u@usecon": dict(_BLS, descriptor="X (SA, Thous)"),
+    "u@bci": dict(_BLS, shortsource="CB", longsource="The Conference Board",
+                  descriptor="X (NSA, Thous)"),
+    "v@labor": dict(_BLS, descriptor="X (SA, Thous)"),
+    "v2@labor": dict(_BLS, descriptor="X (SA, Thous)"),
+})
+_pick, _why = _tie_sa(["u@usecon", "u@bci"])
+check(_pick is None and "shortsource" in _why,
+      "differing SA does NOT excuse a differing source — that still parks", _why[:96])
+
+# Identical on everything including SA, same database: nothing left to decide on.
+_pick, _why = _tie_sa(["v@labor", "v2@labor"])
+check(_pick is None and "SAME database" in _why,
+      "two codes identical in every respect, one database, still park", _why[:90])
+
+check(lane.R.sa_requested({"base_descriptor": "All Employees: Total Private, NSA"}) == "nsa"
+      and lane.R.sa_requested({"base_descriptor": "All Employees: Total Private"}) == ""
+      and lane.R.sa_requested({"sa_hint": "nsa"}) == "nsa",
+      "an NSA request is read from sa_hint or from the descriptor's words")
 
 
 # ── §15.3 chat memory ────────────────────────────────────────────────────────────

@@ -2574,7 +2574,20 @@ both BLS, both 1052 observations from 1939-01-31, both `AVG`, both magnitude 3, 
 arrived as a descriptor-exact tie that was identical on all nine data-bearing fields —
 i.e. it read as a perfect mirror, and the tie-break would have bound one at random.
 
-Two guards now cover it, and the order matters:
+**D14 (2026-09-05): an SA/NSA pair is not a park, it is a default.** Once the twins are
+correctly identified as two vintages of ONE series, there is nothing for the operator to
+adjudicate — commentary charts are about momentum, and the house answer is seasonally
+adjusted. So the resolver binds the SA copy, falls back to the raw one only when no SA
+copy exists, and binds NSA when the read asks for it (an explicit `sa_hint`, or the words
+"NSA" / "not seasonally adjusted" in the descriptor). The bind reason says how to ask for
+raw, so the default is visible rather than silent.
+
+This applies ONLY when the candidates agree on every identity field — source, frequency,
+aggregation, magnitude, datatype, diftype. `numobs` and `startdate` are allowed to differ,
+because a seasonally adjusted copy legitimately begins later than its raw sibling. A pair
+differing on SA *and* on source is still two different series and still parks.
+
+Three guards now cover this area, and the order matters:
 
 1. **Two codes in the SAME database are never mirrors.** A database does not hold one
    series twice under two names, so the pair is two different series that happen to
@@ -2584,6 +2597,9 @@ Two guards now cover it, and the order matters:
 2. **`seasonal_adjustment`, derived** from the descriptor's last parenthetical at token
    level (so "Not Seasonally Adjusted" inside a series NAME cannot be mistaken for the
    units tag), is compared as data-bearing.
+3. **When seasonal adjustment is the ONLY difference, D14 decides** rather than parking.
+   This runs before guard 1, because an SA/NSA pair inside one database would otherwise
+   hit it.
 
 **What this prevented, measured.** Before the fix, "All Employees: Total Nonfarm" bound
 `lanagr@usecon` — which is the **NSA** series — for chart 5, a payroll-momentum chart
@@ -2706,7 +2722,7 @@ have been asked. The parked-slot widget (§16) stays after all of it.
 | G19c | **MET.** `transform_key` derives from the slot formula; 142 ledger slots replayed with 0 labels lost and 0 swapped |
 | G19d | **MET.** A true database mirror binds; genuinely different series still park, naming the differing fields |
 | G19e | **MET.** Unreachable DLX metadata parks rather than guessing |
-| G19f | **RUN 2026-09-05, and it earned its keep.** 18 slots: 2 bound, 16 parked, 11 of the 16 naming their evidence. **All 18 transform phrases mapped** — `movv(diff(X,1),3)` for the charts 5/8 compounds and `difa%(X,2)` for chart 4, none silently truncated. Its real value was catching the SA/NSA mirror defect above, which would have plotted NSA payrolls on chart 5. The 5 remaining unanswerable parks are all on the SIMILARITY path ("19 descriptor-similar candidates — human disambiguates"), which §15.2 never touched — see §15.7 |
+| G19f | **RUN 2026-09-05, and it earned its keep.** After D14: 18 slots, **7 bound, 11 parked**, 6 of the 11 naming their evidence. (Before D14: 2 bound, 16 parked — the SA default resolved five.) **All 18 transform phrases mapped** — `movv(diff(X,1),3)` for the charts 5/8 compounds and `difa%(X,2)` for chart 4, none silently truncated. Its real value was catching the SA/NSA mirror defect above, which would have plotted NSA payrolls on chart 5. The 5 remaining unanswerable parks are all on the SIMILARITY path ("19 descriptor-similar candidates — human disambiguates"), which §15.2 never touched — see §15.7 |
 | G19g | **MET.** `forget_binding` removes a chat-store entry and the next resolve re-asks |
 | G19h | **MET.** A park resolved in one chat is not re-asked in the next, same operator; the chat entry overrides the daily entry it shadows. Proved end to end against live DLX: "Personal Saving Rate" parks, is remembered as `YPSVR@USECON`, and binds from memory in a fresh module state |
 
@@ -2721,7 +2737,7 @@ choose — it does not even say that no candidate matched exactly. §15.2 gave t
 exact-tie path real evidence; the similarity path still has none. The same
 `Haver.metadata` call would serve it.
 
-**The bind rate is low, and that is mostly the descriptors.** Only 2 of 18 bound, because
+**The bind rate is limited by the descriptors.** 7 of 18 bind, because
 a commentary names series the way an economist says them ("Aggregate Weekly Payrolls:
 Total Private", "Federal Funds Target Rate") rather than the way Haver spells them. This
 is the case §15.3 exists for: each park is answered once and then remembered. The gate to

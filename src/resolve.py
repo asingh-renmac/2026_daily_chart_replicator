@@ -795,6 +795,19 @@ def _sa_of_descriptor(descriptor: str) -> str:
 # park a genuine mirror — the exact over-parking this section exists to stop.
 _CATALOG_ONLY = ("group", "decprecision", "datetimemod", "geography1", "geography2")
 
+# Fields that make a series what it IS. An SA and NSA twin of one series agrees on all
+# of them; `numobs` and `startdate` are left out on purpose, because a seasonally
+# adjusted copy legitimately begins later than its raw sibling.
+_IDENTITY_FIELDS = ("shortsource", "longsource", "frequency", "aggtype", "magnitude",
+                    "datatype", "diftype")
+
+# Only the NSA direction is detected from words. An unstated preference already defaults
+# to seasonally adjusted, so a matching `\bsa\b` would change nothing while risking a
+# false positive on an abbreviation inside a series name.
+_NSA_WORDS = re.compile(
+    r"\b(nsa|not[\s-]+seasonally[\s-]+adjusted|non[\s-]*seasonally[\s-]+adjusted)\b",
+    re.I)
+
 _METADATA_CACHE: dict[str, Optional[dict]] = {}
 
 
@@ -864,7 +877,63 @@ def mirror_differences(codes: list[str]) -> Optional[dict]:
     return diffs
 
 
-def break_exact_tie(exact: list[dict]) -> tuple[Optional[dict], str]:
+def sa_requested(slot: dict) -> str:
+    """`"sa"`, `"nsa"`, or `""` when the read says nothing — what the OPERATOR asked for.
+
+    An explicit `sa_hint` wins. Failing that, only the NSA direction is read out of the
+    descriptor, because an unstated preference already resolves to seasonally adjusted
+    (D14) and so detecting "SA" in words would change no outcome."""
+    hint = _sa_norm(slot.get("sa_hint") or "")
+    if hint == "nsa":
+        return "nsa"
+    if hint in ("sa", "saar"):
+        return "sa"
+    text = f"{slot.get('base_descriptor') or ''} {slot.get('description') or ''}"
+    return "nsa" if _NSA_WORDS.search(text) else ""
+
+
+def _pick_sa_twin(exact: list[dict], want: str) -> tuple[Optional[dict], str]:
+    """Choose between the SA and NSA copies of ONE series (decision D14).
+
+    House rule: seasonally adjusted unless the read asks for raw. Commentary charts are
+    about momentum, and an NSA line answers a different question than the one the words
+    ask — chart 5 of the G19f baseline ("payroll momentum") would have plotted NSA
+    payrolls. Raw is still reachable, but only by saying so.
+    """
+    def sa_of(v) -> str:
+        desc = _meta_value((haver_metadata(v["code"]) or {}).get("descriptor"))
+        tag = _sa_of_descriptor(desc)
+        return "sa" if tag == "saar" else tag
+
+    target = want if want in ("sa", "nsa") else "sa"
+    matches = [v for v in exact if sa_of(v) == target]
+    fell_back = False
+    if not matches and target == "sa":
+        # "Only if there is no seasonally adjusted version, use the raw one."
+        matches = [v for v in exact if sa_of(v) == "nsa"]
+        fell_back = True
+    if not matches:
+        return None, (f"asked for {target.upper()} but no candidate's descriptor says so: "
+                      + ", ".join(v["code"] for v in exact))
+
+    # More than one copy of the right vintage means it is ALSO a database mirror; reuse
+    # the usecon preference rather than inventing a second ordering.
+    in_usecon = [v for v in matches
+                 if v["code"].split("@")[-1].lower() == "usecon"] or matches
+    pick = max(in_usecon, key=lambda v: _meta_value(
+        (haver_metadata(v["code"]) or {}).get("enddate")))
+    others = [v["code"] for v in exact if v["code"] != pick["code"]]
+    if fell_back:
+        return pick, (f"no seasonally adjusted copy exists, so bound the raw one "
+                      f"({pick['code']}) over {', '.join(others)}")
+    return pick, (f"the candidates are the seasonally adjusted and raw copies of one "
+                  f"series; bound the {target.upper()} one ({pick['code']}) over "
+                  f"{', '.join(others)}"
+                  + ("" if want else " — say \"NSA\" in the descriptor to get the raw one"))
+
+
+def break_exact_tie(exact: list[dict],
+                    sa_want: str = "") -> tuple[Optional[dict], str]:
     """Separate two-or-more descriptor-exact candidates using DLX metadata (§15.2).
 
     Returns `(pick, reason)`; `pick` is None when the slot must still park, and the
@@ -872,13 +941,28 @@ def break_exact_tie(exact: list[dict]) -> tuple[Optional[dict], str]:
     is not evidence") stated a fact the operator could not act on, when the evidence to
     act on was one 200 ms call away."""
     codes = [v["code"] for v in exact]
+    diffs = mirror_differences(codes)
 
-    # Two codes in ONE database are not mirrors, whatever their metadata says. A
-    # database does not hold the same series twice under two names, so the pair is two
-    # different series that happen to normalize to one descriptor — the `lapriv` /
-    # `lapriva` (NSA/SA) shape G19f surfaced. Checking this BEFORE the metadata
-    # comparison means the answer does not depend on having found a field that
-    # separates them, which is what let the SA case through the first time.
+    if diffs is None:
+        return None, ("descriptor-exact on more than one candidate and DLX metadata was "
+                      "unavailable to separate them: " + ", ".join(codes))
+
+    # D14 — the candidates are the SA and NSA copies of ONE series. They agree on every
+    # identity field, so the only question is which vintage the operator wants, and the
+    # house has an answer. This runs BEFORE the same-database park below, because that
+    # park is what an SA/NSA pair in one database would otherwise hit.
+    if diffs and "seasonal_adjustment" in diffs and not (set(diffs) & set(_IDENTITY_FIELDS)):
+        return _pick_sa_twin(exact, sa_want)
+
+    if diffs:                                  # decision D2: any data difference parks
+        return None, (
+            f"{len(codes)} candidates match the descriptor exactly but DLX says they are "
+            f"different series (differ on {', '.join(sorted(diffs))}) — "
+            + "; ".join(metadata_summary(c) for c in codes))
+
+    # Identical on everything INCLUDING seasonal adjustment. Two such codes in ONE
+    # database cannot be mirrors — a database does not hold one series twice under two
+    # names — and with nothing left to tell them apart there is nothing to decide on.
     databases = [c.split("@")[-1].lower() for c in codes]
     if len(set(databases)) < len(databases):
         return None, (
@@ -886,18 +970,6 @@ def break_exact_tie(exact: list[dict]) -> tuple[Optional[dict], str]:
             f"database, so they are different series rather than mirrors — "
             + "; ".join(f"{c} ({(haver_metadata(c) or {}).get('descriptor', '?')})"
                         for c in codes))
-
-    diffs = mirror_differences(codes)
-
-    if diffs is None:
-        return None, ("descriptor-exact on more than one candidate and DLX metadata was "
-                      "unavailable to separate them: " + ", ".join(codes))
-
-    if diffs:                                  # decision D2: any data difference parks
-        return None, (
-            f"{len(codes)} candidates match the descriptor exactly but DLX says they are "
-            f"different series (differ on {', '.join(sorted(diffs))}) — "
-            + "; ".join(metadata_summary(c) for c in codes))
 
     # True mirrors. `usecon` holds only US series, so its PRESENCE in the tie is the
     # evidence that the request is US-scoped; this can never reach for `usecon` on a
@@ -1082,7 +1154,7 @@ def resolve_slot(slot: dict, *,
         # `descriptor_exact` compares normalized token sets with the units parenthetical
         # stripped, so Haver's database mirrors are indistinguishable BY CONSTRUCTION;
         # the catalog cannot break this tie and was never going to. DLX can (§15.2).
-        pick, tie_reason = break_exact_tie(exact)
+        pick, tie_reason = break_exact_tie(exact, sa_requested(slot))
         slot["tie_metadata"] = {v["code"]: {
             k: _meta_value(val) for k, val in (haver_metadata(v["code"]) or {}).items()
         } for v in exact}
