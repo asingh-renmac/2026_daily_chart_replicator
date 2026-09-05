@@ -60,7 +60,66 @@ def _is_agg_or_units(t: str) -> bool:
     return bool(t) and bool(_AGG_UNIT_RE.match(t.strip()))
 
 
-def _flat_transform(t: str, target: str) -> str | None:
+# The closed Haver G3 transform vocabulary, spelled as G3 spells it. `(?![a-z])` keeps
+# `diff` from biting the front of `difference` and `mov[vta]` off `moving`, so a prose
+# phrase still reaches the word heuristics below.
+_G3_ATOM_RE = re.compile(r"^(mov[vta]|zs|ln|yryr|difa|difv|diff)(%|l)?(?![a-z])")
+# What may FOLLOW an atom and still leave it a bare atom: a window, nothing else. Any
+# other word means the phrase is prose that merely starts with an atom-like stem.
+_G3_ATOM_TAIL_RE = re.compile(
+    r"^[\s,\-]*(?:\d+[\s\-]*(?:period|periods|term|terms|pd|pds|month|months|mo|"
+    r"qtr|qtrs|quarter|quarters|yr|yrs|year|years|week|weeks|wk|day|days)?)?[\s\-.]*$")
+# A comma-part that is a WINDOW for the preceding operation rather than a further
+# operation: the `, 3-period` of "difa% of 3-term moving average, 3-period" and the
+# `, 6-month` of "moving average, 6-month". The unit words matter — omitting them read
+# "moving average, 6-month" as a second OPERATION and raised on a phrase that has
+# always worked.
+_PARAM_PART_RE = re.compile(
+    r"^\d+[\s\-]*(?:period|periods|term|terms|pd|pds|month|months|mo|"
+    r"qtr|qtrs|quarter|quarters|yr|yrs|year|years|week|weeks|wk|day|days)?$")
+
+# Periods per year, for converting a window stated in one unit onto a series sampled in
+# another (§15.1d). "2-quarter" on a MONTHLY series is six native periods, not two.
+_UNIT_PER_YEAR = {"month": 12, "months": 12, "mo": 12, "mth": 12, "mths": 12,
+                  "quarter": 4, "quarters": 4, "qtr": 4, "qtrs": 4,
+                  "year": 1, "years": 1, "yr": 1, "yrs": 1, "annual": 1,
+                  "week": 52, "weeks": 52, "wk": 52, "wks": 52,
+                  "day": 365, "days": 365}
+_FREQ_PER_YEAR = {"M": 12, "Q": 4, "A": 1, "W": 52, "D": 365}
+_WINDOW_UNIT_RE = re.compile(r"(\d+)\s*[-\s]?\s*([a-z]+)")
+
+
+def _native_window(t: str, n: int, freq: str | None) -> int:
+    """Convert a window stated in the phrase's UNIT into the series' NATIVE periods.
+
+    G3 counts windows in periods of the series, so `difa%(x,2)` on a monthly series is a
+    TWO-MONTH annualized rate. A phrase reading "2-quarter annualized % change" bound to
+    a monthly series therefore plotted something six times shorter than it said — far
+    noisier, and plausible enough on the page to pass review. Every phrase in the ledger
+    happens to name the unit its series is sampled at, which is why this never bit.
+
+    With no `freq` the number is taken literally, exactly as before; the conversion only
+    ever engages where the caller knows the frequency AND the phrase names a different
+    unit. A window that will not divide evenly (2 months of a quarterly series) raises
+    rather than rounding to something the words did not say."""
+    if not freq:
+        return n
+    m = _WINDOW_UNIT_RE.search(t)
+    if not m:
+        return n
+    per_unit = _UNIT_PER_YEAR.get(m.group(2))
+    per_year = _FREQ_PER_YEAR.get((freq or "").strip().upper()[:1])
+    if not per_unit or not per_year or per_unit == per_year:
+        return n
+    exact = n * per_year / per_unit
+    if exact != int(exact) or exact < 1:
+        raise ValueError(
+            f"window {m.group(0)!r} does not fit a {freq} series — "
+            f"{n} x {per_year}/{per_unit} is not a whole number of periods")
+    return int(exact)
+
+
+def _flat_transform(t: str, target: str, freq: str | None = None) -> str | None:
     """Map ONE flat (non-composed) normalized Haver transform phrase `t` onto the
     series expression `target` (a bare mnemonic OR a sub-formula like `movv(X,3)`).
     Returns a G3 formula, None for a level, or RAISES on an unrecognized phrase.
@@ -72,8 +131,30 @@ def _flat_transform(t: str, target: str) -> str | None:
     if t in _LEVEL_PHRASES:
         return None
     mnum = re.search(r"(\d+)", t)
-    n = int(mnum.group(1)) if mnum else 1
-    pct = ("%" in t) or ("percent" in t) or ("pct" in t)
+    n = _native_window(t, int(mnum.group(1)) if mnum else 1, freq)
+
+    # A DLX read sometimes hands back the G3 function name itself rather than prose —
+    # "difa% of 3-term moving average, 3-period". The heuristics below read words, so
+    # `difa%` fell through to the plain-change branch and dropped the annualization.
+    # The atom set is the same closed one those heuristics implement, so naming it
+    # directly adds no vocabulary; `t == "zs"` was this same case, handled ad hoc.
+    m = _G3_ATOM_RE.match(t)
+    if m and _G3_ATOM_TAIL_RE.match(t[m.end():]):
+        name, suffix = m.group(1), m.group(2) or ""
+        if name in ("zs", "ln"):
+            return f"{name}({target})"
+        if name.startswith("mov"):
+            if not mnum:
+                raise ValueError(f"moving average/sum needs an N-period window: {t!r}")
+            return f"{name}({target},{n})"
+        if name == "yryr":
+            return f"yryr{suffix}({target})"
+        return f"{name}{suffix}({target},{n})"
+
+    # "growth" means a PERCENT change (decision D10, 2026-09-04). Left out of `pct` it
+    # would have produced an absolute difference on a phrase every economist reads as a
+    # rate.
+    pct = ("%" in t) or ("percent" in t) or ("pct" in t) or ("growth" in t)
     logv = ("log" in t) or ("logarithm" in t) or bool(re.search(r"\bln\b", t))
     p2p = any(k in t for k in (
         "period to period", "period-to-period", "period over period",
@@ -95,7 +176,7 @@ def _flat_transform(t: str, target: str) -> str | None:
         "annual" in t and "rate" in t) or bool(
         re.search(r"(?:^|[\s\-])ann(?:\.|ual(?:ized|ised)?)?(?:[\s\-]|$)", t))
     is_change = ("change" in t or "chg" in t or "difference" in t or "diff" in t
-                 or pct or p2p)
+                 or "growth" in t or pct or p2p)
 
     # moving average / sum / annual-rate FIRST (the phrase carries 'average'/'sum').
     if "moving" in t or re.search(r"\d+\s*mma\b", t) or "mov avg" in t or "mov. avg" in t:
@@ -140,7 +221,22 @@ def _flat_transform(t: str, target: str) -> str | None:
         "(fail-loud, not silent-level)")
 
 
-def phrase_to_haver(phrase: str, mnem: str) -> str | None:
+_UNMAPPED = object()          # "this fragment raised", distinct from a level's None
+
+
+def _maps_alone(part: str, freq: str | None) -> bool:
+    """True when a comma-part is a standalone OPERATION rather than a continuation of
+    the part before it. A part carrying `of` is a composition chain by construction."""
+    if " of " in part:
+        return True
+    try:
+        _flat_transform(part, "@", freq)
+        return True
+    except ValueError:
+        return False
+
+
+def phrase_to_haver(phrase: str, mnem: str, freq: str | None = None) -> str | None:
     """Translate a vision-read `applied_transform` PHRASE into a G3/Haver formula on
     the bare mnemonic `mnem`. Returns None for a level series, a formula string
     otherwise, and **raises** on a present-but-unrecognized transform.
@@ -151,30 +247,116 @@ def phrase_to_haver(phrase: str, mnem: str) -> str | None:
     un-transformed series looks right but is wrong — the exact silent-wrong class the
     gate exists to stop.
 
-    Composition: a compound phrase "<transform> of <N>-period moving average" (e.g.
-    "% Change - Year to Year of 3-month moving average") is composed as
-    head(movv(mnem,N)) — so the moving average is NEVER silently dropped. Any other
-    compound falls through to the flat mapper, which fails loud rather than guessing."""
+    COMPOSITION (§15.1b). A compound phrase names more than one operation, and the two
+    markers nest in OPPOSITE directions — both readings are ledger-attested, not invented:
+
+        "A of B"   B is inner  →  A(B(x))   "Z-Score of Year-to-Year % Change"
+                                            shipped `zs(yryr%(X))`
+        "A, B"     A is inner  →  B(A(x))   "% Change - Year to Year, Z-Score"
+                                            shipped `zs(yryr%(X))`
+
+    A third comma sense is a WINDOW, not an operation: the `, 3-period` of "difa% of
+    3-term moving average, 3-period" (`difa%(movv(X,3),3)`) belongs to the OUTERMOST
+    function of the part before it, which is why it is attached to `chain[0]`.
+
+    This replaces a single hard-coded composition ("<head> of <N>-period moving
+    average"). Everything else fell through to the flat mapper, which matched ONE
+    operation in the phrase and silently discarded the rest: "3-month moving average of
+    the month-over-month change" plotted a 3mma of the LEVEL, and "% Change - Year to
+    Year, Z-Score" plotted a z-score of the level. Both look plausible on the page,
+    which is what made them dangerous.
+
+    A phrase with no composition marker takes the flat route untouched, so the
+    historically-flat phrases map byte-identically (G19a).
+
+    `freq` is the series' native frequency, used only to convert a window stated in a
+    different unit (§15.1d). Omitted, windows are taken literally as before.
+
+    Fail-loud is what makes an incomplete grammar safe (decision D6): any fragment that
+    is not a recognized operation raises and names ITSELF, so the operator knows which
+    piece needs a `formula` instead of re-guessing the whole phrase."""
     t = (phrase or "").strip().lower()
     t = re.sub(r"\s+", " ", t)
     if t in _LEVEL_PHRASES or _is_agg_or_units(t):
         return None
-    # compound "<head> of <N>… moving average" → head(movv(mnem,N)); guards against a
-    # flat rule matching the head and SILENTLY dropping the inner moving average.
-    parts = t.split(" of ", 1)
-    if len(parts) == 2 and "mov" in parts[1]:
-        mnum = re.search(r"(\d+)", parts[1])
-        if not mnum:
-            raise ValueError(f"compound MA needs an N-period window: {phrase!r}")
-        inner = f"movv({mnem},{int(mnum.group(1))})"
-        return _flat_transform(parts[0].strip(" -,"), inner)
-    return _flat_transform(t, mnem)
+    # A phrase that IS a formula ("zs(yryr())", "zs(difa%(movv(...,3),3))") is a vision
+    # read that transcribed the cell instead of describing it. Guessing at it is how
+    # `zs(difa%(movv(...,3),3))` used to come back as `diff%(X,3)` — unrelated math,
+    # silently. The operator has a field for this (decision D11).
+    if "(" in t or ")" in t:
+        raise ValueError(
+            f"applied_transform {phrase!r} looks like a G3 formula, not a description "
+            f"— pass it in the slot's `formula` field, where it is used verbatim")
+
+    parts = re.split(r"[;,]", t)
+    if len(parts) == 1 and " of " not in t:
+        return _flat_transform(t, mnem, freq)   # flat: unchanged route and output
+
+    chains: list[list[str]] = []             # one chain per comma-part, outermost first
+    for raw in parts:
+        part = raw.strip(" -.")
+        if not part:
+            continue
+        if _PARAM_PART_RE.match(part):
+            if not chains:
+                raise ValueError(
+                    f"transform window {part!r} has no operation to attach to: {phrase!r}")
+            head = chains[-1][0]
+            # The window must actually reach the function. `zs` and `ln` take none, so
+            # "z-score of 6-month moving average, 12-period" would have swallowed the 12
+            # in silence — the same class of drop this parser exists to end. If adding
+            # the window changes nothing, it was not consumed.
+            try:
+                unwindowed = _flat_transform(head, "@", freq)
+            except ValueError:
+                unwindowed = None            # head NEEDS a window (a bare "moving average")
+            if unwindowed is not None and \
+                    _flat_transform(f"{head} {part}", "@", freq) == unwindowed:
+                raise ValueError(
+                    f"window {part!r} cannot apply to {head!r}, which takes none "
+                    f"— it would be dropped: {phrase!r}")
+            chains[-1][0] = f"{head} {part}"
+            continue
+        if chains and not _maps_alone(part, freq):
+            # A comma can also be PUNCTUATION INSIDE one operation rather than a
+            # composition marker: "% change, year-over-year" is a single y/y % change,
+            # and reading it as two operations raises on a phrase that has always
+            # worked. A fragment that does not map on its own is a continuation of the
+            # part before it — but only if joining it CHANGES the mapping. If the head
+            # maps identically with and without the fragment, the fragment was ignored,
+            # which is the silent drop this parser exists to end.
+            head = chains[-1][0]
+            try:
+                before = _flat_transform(head, "@", freq)
+            except ValueError:
+                before = _UNMAPPED               # head alone needs the continuation
+            try:
+                after = _flat_transform(f"{head} {part}", "@", freq)
+            except ValueError as exc:
+                raise ValueError(f"{exc}  [reading {part!r} in {phrase!r}]") from None
+            if after == before:
+                raise ValueError(
+                    f"{part!r} adds nothing to {head!r} and would be dropped: {phrase!r}")
+            chains[-1][0] = f"{head} {part}"
+            continue
+        chains.append([s.strip(" -.") for s in part.split(" of ") if s.strip(" -.")])
+
+    expr = mnem
+    for chain in chains:                     # comma order: leftmost applies FIRST
+        for segment in reversed(chain):      # "A of B": B applies before A
+            try:
+                applied = _flat_transform(segment, expr, freq)
+            except ValueError as exc:
+                raise ValueError(f"{exc}  [reading {segment!r} in {phrase!r}]") from None
+            if applied is not None:          # a level segment composes as a no-op
+                expr = applied
+    return None if expr == mnem else expr
 
 
-def _applied_formula(slot: dict, mnem: str) -> str:
+def _applied_formula(slot: dict, mnem: str, freq: str | None = None) -> str:
     """The formula string to evaluate for a description-bound slot: its
     `applied_transform` translated onto `mnem`, else the bare mnemonic (level)."""
-    f = phrase_to_haver(slot.get("applied_transform") or "", mnem)
+    f = phrase_to_haver(slot.get("applied_transform") or "", mnem, freq)
     return f or mnem
 
 
@@ -660,11 +842,14 @@ def render_row(row: dict, save_path: str) -> dict:
         else:
             qc = s["resolved"]
             mn = qc.split("@")[0]
+            freq = _freq_of(qc)
             if mn not in series_map:
                 code, db = qc.split("@")
-                series_map[mn] = G.pull(code, db, _freq_of(qc))
-            # apply the read's worded transform (3mma/6mma/yoy%/…) via G3, not raw
-            plot_plan.append((s, _applied_formula(s, mn), _lbl(s),
+                series_map[mn] = G.pull(code, db, freq)
+            # apply the read's worded transform (3mma/6mma/yoy%/…) via G3, not raw.
+            # `freq` lets a window stated in another unit ("2-quarter" on a MONTHLY
+            # series) convert to native periods instead of being taken literally as 2.
+            plot_plan.append((s, _applied_formula(s, mn, freq), _lbl(s),
                               s.get("axis", "shared")))
 
     common = T.common_frequency(series_map)
