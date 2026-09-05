@@ -2722,7 +2722,7 @@ have been asked. The parked-slot widget (§16) stays after all of it.
 | G19c | **MET.** `transform_key` derives from the slot formula; 142 ledger slots replayed with 0 labels lost and 0 swapped |
 | G19d | **MET.** A true database mirror binds; genuinely different series still park, naming the differing fields |
 | G19e | **MET.** Unreachable DLX metadata parks rather than guessing |
-| G19f | **RUN 2026-09-05, and it earned its keep.** After D14: 18 slots, **7 bound, 11 parked**, 6 of the 11 naming their evidence. (Before D14: 2 bound, 16 parked — the SA default resolved five.) **All 18 transform phrases mapped** — `movv(diff(X,1),3)` for the charts 5/8 compounds and `difa%(X,2)` for chart 4, none silently truncated. Its real value was catching the SA/NSA mirror defect above, which would have plotted NSA payrolls on chart 5. The 5 remaining unanswerable parks are all on the SIMILARITY path ("19 descriptor-similar candidates — human disambiguates"), which §15.2 never touched — see §15.7 |
+| G19f | **MET 2026-09-05.** Three runs of 18 slots: 2 bound -> 7 after D14 -> **13 bound, 5 parked** once six operator answers were remembered, with 4 of the 5 naming their evidence. **All 18 transform phrases mapped** at every run. **All 18 transform phrases mapped** — `movv(diff(X,1),3)` for the charts 5/8 compounds and `difa%(X,2)` for chart 4, none silently truncated. Its real value was catching the SA/NSA mirror defect above, which would have plotted NSA payrolls on chart 5. The 5 remaining unanswerable parks are all on the SIMILARITY path ("19 descriptor-similar candidates — human disambiguates"), which §15.2 never touched — see §15.7 |
 | G19g | **MET.** `forget_binding` removes a chat-store entry and the next resolve re-asks |
 | G19h | **MET.** A park resolved in one chat is not re-asked in the next, same operator; the chat entry overrides the daily entry it shadows. Proved end to end against live DLX: "Personal Saving Rate" parks, is remembered as `YPSVR@USECON`, and binds from memory in a fresh module state |
 
@@ -2737,11 +2737,34 @@ choose — it does not even say that no candidate matched exactly. §15.2 gave t
 exact-tie path real evidence; the similarity path still has none. The same
 `Haver.metadata` call would serve it.
 
-**The bind rate is limited by the descriptors.** 7 of 18 bind, because
-a commentary names series the way an economist says them ("Aggregate Weekly Payrolls:
-Total Private", "Federal Funds Target Rate") rather than the way Haver spells them. This
-is the case §15.3 exists for: each park is answered once and then remembered. The gate to
-watch is not the first-run bind rate, it is the SECOND run over the same commentary.
+**The bind rate is limited by the descriptors, and §15.3 is the remedy — measured.** A
+commentary names series the way an economist says them; Haver spells them differently.
+"Average Weekly Hours: Total Private" is `lrtpriva@usecon`, whose descriptor reads "Total
+Private **Industries**"; "Aggregate Weekly Payrolls: Total Private" is `lypriva@labor`,
+"Payrolls **of All Employees**: Total Private". Similarity 0.833 and 0.714 — right series,
+under the gate.
+
+**The gate was deliberately NOT loosened.** A threshold that accepts 0.833 is the one that
+accepted `DFBACTS` for `DFBACTDS`, the wrong directional sibling, at 0.909. Answer once,
+remember forever, is the correct remedy and it is what §15.3 is.
+
+Measured over three runs of the same 18 slots:
+
+| Run | Bound | Parked | What changed |
+|---|---|---|---|
+| 1 | 2 | 16 | §15.1 + §15.2 only |
+| 2 | 7 | 11 | + D14, the SA default |
+| 3 | **13** | **5** | + six operator answers, remembered (§15.3) |
+
+72% bound on the second pass, and the ratchet holds across processes. The `Civilian
+Unemployment Rate` row also exercised D5's second half: it auto-bound `a0m043@bci`, the
+Conference Board copy, and the operator's `LR@USECON` correction now overrides it.
+
+The five that remain are the ones where the catalog genuinely does not surface the series
+— Fed Funds target MIDPOINT (the best hit is daily, and the target has been a range since
+2008), Aggregate Weekly Payrolls for production and nonsupervisory workers, the two
+one-month diffusion indexes, and Food Services employment (every candidate is a CEW
+ESTABLISHMENT count, not employment). These need a ticker, not a better threshold.
 
 **One bind worth a human look:** "Civilian Unemployment Rate" binds `a0m043@bci`, the
 Conference Board's copy, rather than the BLS series most readers would assume. It is a
