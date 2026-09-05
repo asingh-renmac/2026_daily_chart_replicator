@@ -135,8 +135,8 @@ File: `https://chart.hvr-mcp.work/chart/<chart_id>`
 From this repo checkout: `haver_chart/SETUP.md`.
 Teammate zip (no git clone): `haver_chart/TEAMMATE_SETUP.md` (ships as `README_FIRST.md`).
 
-Pre-flight: `python haver_chart/selftest.py` — expect **41/41** (root README may
-still say 37).
+Pre-flight: `python haver_chart/selftest.py` — expect **71/71** (older docs may say
+41 or 37).
 
 ### C. New Windows host (AVD or dedicated VM)
 
@@ -153,6 +153,13 @@ still say 37).
 
 Do not open ports 8100/8101 on the NSG. Do not create a second Cloudflare tunnel
 if one already serves `chart.hvr-mcp.work`.
+
+### Updating a host that is already running
+
+`haver_chart/DEPLOY.md`. Note the one step that is easy to miss: the host keeps its OWN
+copy of the knowledge JSON, so a change to how a store is KEYED needs that store migrated
+on the host as well. §15.1a is exactly this shape, and skipping it fails silently —
+labels stop being found and charts fall back to generated legends that look plausible.
 
 ### Live AVD paths (recorded 2026-08-30)
 
