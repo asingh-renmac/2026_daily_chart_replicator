@@ -10,7 +10,9 @@ does not see the tool, the problem is the config file or the restart — not the
 from __future__ import annotations
 
 import json
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -259,6 +261,67 @@ check(_pick is None and "usecon" in _why,
 _pick, _why = _tie(["gone@usecon", "gone@bci"])
 check(_pick is None and "unavailable" in _why,
       "unreachable DLX metadata parks — it never falls back to a guess")
+
+
+# ── §15.3 chat memory ────────────────────────────────────────────────────────────
+# Redirected to a temp directory: these must never write the shared store, and a test
+# that depends on what happens to be in the real one is a flake waiting to happen.
+_CHAT = lane.CHAT
+_real_dir = lane.R.CLARIFIED_DIR
+_tmp_dir = Path(tempfile.mkdtemp(prefix="haver-chat-selftest-"))
+try:
+    lane.R.CLARIFIED_DIR = _tmp_dir
+    _slug, _claims = _CHAT.operator_identity()
+    check(_slug == "local" and _claims == {},
+          "stdio has no token, so the operator slug falls back to 'local'", _slug)
+    check(_CHAT.store_path().name == "chat_learned.local.json",
+          "the store is named per operator", _CHAT.store_path().name)
+    check(_CHAT.load() == {}, "a store that does not exist reads as empty memory")
+
+    _CHAT.remember("Some Series Nobody Has", "ABC@USECON", note="selftest")
+    _loaded = _CHAT.load()
+    check(list(_loaded) == ["some series nobody has"],
+          "the entry keys on the NORMALIZED descriptor, as resolve looks it up",
+          str(list(_loaded)))
+    check(_loaded["some series nobody has"]["code"] == "ABC@USECON",
+          "and it is shaped like a learned_descriptors entry, so it drops into learned=")
+
+    # G19g: a wrong answer must be revocable without hand-editing JSON on a share.
+    check(_CHAT.forget("SOME SERIES nobody has") is True,
+          "forget removes the entry and is case/space-insensitive like the lookup")
+    check(_CHAT.load() == {}, "G19g: after forget, the memory is empty again")
+    check(_CHAT.forget("never stored") is False,
+          "forgetting something absent reports false rather than raising")
+
+    # An unreadable store degrades to NO memory, never to a crash — the lane has to
+    # survive a half-written file on a network share.
+    _CHAT.store_path().write_text("{ this is not json", encoding="utf-8")
+    check(_CHAT.load() == {}, "a corrupt store reads as empty rather than taking the lane down")
+
+    # The atomic write leaves nothing behind. A stray `.tmp` on the share is how a
+    # later reader picks up a half-written file.
+    _CHAT.remember("Another Series", "DEF@USECON")
+    check(not [p for p in _tmp_dir.iterdir() if p.suffix == ".tmp"],
+          "the atomic write leaves no temp file behind",
+          str([p.name for p in _tmp_dir.iterdir()]))
+
+    # G19h: the chat entry must WIN over the daily store, or correcting a wrong
+    # auto-bind (D5) is impossible.
+    _merged = {**{"another series": {"code": "WRONG@USECON"}}, **_CHAT.load()}
+    check(_merged["another series"]["code"] == "DEF@USECON",
+          "G19h: the chat entry overrides the daily learned entry it shadows")
+finally:
+    lane.R.CLARIFIED_DIR = _real_dir
+    shutil.rmtree(_tmp_dir, ignore_errors=True)
+
+# §13.6 is NOT relaxed by any of the above. The chat lane gained a store of its own;
+# it did not gain write access to the daily one.
+_sealed = False
+try:
+    lane.R.save_learned("x", "Y@USECON")
+except Exception as _exc:
+    _sealed = type(_exc).__name__ == "StoreWriteAttempted"
+check(_sealed, "the daily learned store is STILL sealed against chat writes (§13.6)")
 
 for raw, want in (("bar", "bar"), ("columns", "bar"), ("stacked bars", "stacked_bar"),
                   ("line", "line"), ("", "line")):

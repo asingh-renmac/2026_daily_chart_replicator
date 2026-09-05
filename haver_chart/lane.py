@@ -34,6 +34,11 @@ with quiet_stdout():                      # importing Haver prints to stdout
 
 seal_stores(R)                            # §13.6 — reads allowed, writes raise
 
+# Imported AFTER the seal, and deliberately not sealed: this is the chat lane's OWN
+# store (§15.3), a different file that `run_daily` never reads. The seal still holds
+# where it matters — `learned_descriptors.json` remains unwritable from here.
+from haver_chart import chat_store as CHAT    # noqa: E402
+
 OUT_ROOT = REPO_ROOT / "outputs" / "chat"
 
 # Renders are serialized process-wide (§14.5). Two reasons, and the first one applies
@@ -149,9 +154,14 @@ def _resolve_kwargs() -> dict:
     `confirm=lambda: True` matches the daily AUTO path — every search hit is already
     a real catalog series, and the bound code is DLX-verified once, after resolve.
     """
+    # §15.3: this operator's chat memory layers OVER the daily store, read-through
+    # rather than copied. The chat entry wins on conflict, which is what makes
+    # correcting a wrong auto-bind possible (D5). Scope is this process — the merge
+    # happens here, in the kwargs, so nothing is written back and `run_daily` never
+    # sees it.
     return dict(confirm=lambda c: True, get_meta=HS.get_meta, search=HS.search,
                 clarified=R.load_clarified(), trusted=R.load_trusted(),
-                learned=R.load_learned())
+                learned={**R.load_learned(), **CHAT.load()})
 
 
 def _dlx_verify(slot: dict) -> dict:
@@ -199,15 +209,26 @@ def resolve_one(base_descriptor: str, applied_transform: str = "", formula: str 
         slot = _dlx_verify(R.resolve_slot(slot, **_resolve_kwargs()))
 
     resolved = slot.get("status") == R.SLOT_RESOLVED
+    # Provenance: a bind that came out of THIS operator's chat memory must say so.
+    # Without it, a remembered answer is indistinguishable from a fresh catalog match,
+    # and an operator who wants to correct one cannot tell there is anything to correct.
+    from_memory = bool(
+        resolved and slot.get("bound_via_query") == "(learned)"
+        and R._norm_key(base_descriptor) in CHAT.load())
+    reason = slot.get("reason") or ""
+    if from_memory:
+        reason = (f"{reason} — from your chat memory; call forget_binding"
+                  f"({base_descriptor!r}) if this bind is wrong").strip(" —")
     return {
         "status": "resolved" if resolved else "parked",
+        "from_chat_memory": from_memory,
         "resolved": slot.get("resolved"),
         "codes": slot.get("codes") or [],
         "via": slot.get("bound_via_query") or "",
         "similarity": slot.get("relevance"),
         "exact_token_match": bool(slot.get("relevance_exact")),
         "candidates": _candidates(slot),
-        "reason": slot.get("reason") or "",
+        "reason": reason,
         "needs_clarification": bool(slot.get("needs_clarification")),
         "freq_resolved": slot.get("freq_resolved") or "",
         "agg_resolved": slot.get("agg_resolved") or "",
@@ -227,6 +248,52 @@ def resolve_one(base_descriptor: str, applied_transform: str = "", formula: str 
 
 
 # ──────────────────────────────── rendering ─────────────────────────────────
+def remember_binding(base_descriptor: str, code_at_db: str,
+                     source: str = "park_resolution", note: str = "") -> dict:
+    """Record an operator's answer so the same descriptor never re-asks (§15.3, D5).
+
+    DLX-confirms the code BEFORE storing. That guard is the difference between a memory
+    and a poisoning vector: without it, a model that hallucinated `LRTMANUA@USECN` would
+    write the typo into the store and every later chart on that descriptor would fail
+    the same way, with the failure now looking like a remembered decision. Confirming
+    proves the series EXISTS; only the operator can say it is the RIGHT one, which is
+    why `forget_binding` exists (D4).
+    """
+    code = (code_at_db or "").strip()
+    if "@" not in code:
+        raise ValueError(f"expected a code@database, got {code_at_db!r}")
+    if not (base_descriptor or "").strip():
+        raise ValueError("base_descriptor is required — it is the lookup key")
+    with quiet_stdout():
+        if not R.confirm_ticker(code):
+            raise ValueError(
+                f"DLX will not confirm {code} — not storing it. Check the ticker "
+                f"with resolve_series first; a remembered bind that does not resolve "
+                f"turns one bad answer into a permanent one")
+        meta = R.haver_metadata(code) or {}
+    entry = CHAT.remember(base_descriptor, code, source=source, note=note)
+    return {"stored": True, "operator": CHAT.operator_identity()[0],
+            "description": base_descriptor, "code": code,
+            "dlx_descriptor": str(meta.get("descriptor") or ""),
+            "store": str(CHAT.store_path()), "added": entry["added"]}
+
+
+def forget_binding(base_descriptor: str) -> dict:
+    """Remove one remembered binding (D4), so a wrong answer is revocable without
+    hand-editing JSON on a network share."""
+    removed = CHAT.forget(base_descriptor)
+    return {"removed": removed, "operator": CHAT.operator_identity()[0],
+            "description": base_descriptor, "store": str(CHAT.store_path()),
+            "note": ("" if removed else
+                     "nothing stored under that descriptor — the bind you saw may have "
+                     "come from the daily learned store, which chat cannot edit")}
+
+
+def memory() -> dict:
+    """What this operator's chat memory holds (audit without opening the file)."""
+    return CHAT.describe()
+
+
 def _axis_block(lo, hi) -> dict:
     return {"min": lo, "max": hi}
 
@@ -424,7 +491,11 @@ def health() -> dict:
     held = _RENDER_LOCK.locked()
     return {"status": "ok", "rendering": held,
             "last_render_finished": _last_render_finished,
-            "retention_days": RETENTION_DAYS}
+            "retention_days": RETENTION_DAYS,
+            # Whose memory this process is reading, and how much of it. A remembered
+            # bind that nobody can see is indistinguishable from a resolver that has
+            # started guessing.
+            "chat_memory": CHAT.describe()}
 
 
 # ─────────────────────────────── validation ─────────────────────────────────

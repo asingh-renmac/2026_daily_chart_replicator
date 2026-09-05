@@ -2598,7 +2598,7 @@ which is what the §16 picker will render as columns.
 same call answers the long-standing "the catalog's end date is stale" complaint — for the
 park message today, and for the §16 picker later.
 
-### §15.3 Phase 3 — the chat lane cannot remember (the ratchet) — PROPOSAL
+### §15.3 Phase 3 — the chat lane cannot remember (the ratchet) — DONE 2026-09-05
 
 `seal_stores` makes the stores read-only from chat (§13.6), so every park resolved by eye
 is forgotten at end of turn and tomorrow's commentary parks the same slots. Parks never
@@ -2625,6 +2625,36 @@ amortize. That, not the park rate itself, is what makes the lane feel worse over
 
 Promoting a chat entry into the daily store stays out of scope, gated behind G9d.
 
+**Built as `haver_chart/chat_store.py`, and the location is the design.** Putting the
+writer on the `resolve` module would have collided with `seal_stores`, which seals every
+`save_*` there — so the chat lane owns its own module and its own file, and §13.6 is not
+weakened to make room for it. `learned_descriptors.json` remains unwritable from chat;
+`run_daily` has zero references to the chat store. The merge happens in one place,
+`lane._resolve_kwargs`, as `learned={**R.load_learned(), **CHAT.load()}`.
+
+**A remembered bind is a shortcut, not an exemption.** `resolve_slot` runs its
+`double_transform_reason` guard over learned entries, so chat entries inherit the same
+defense-in-depth as daily ones. `remember_binding` additionally DLX-confirms the code
+before storing: without that, a hallucinated `LRTMANUA@USECN` would be written once and
+then fail identically forever, with the failure disguised as a remembered decision. The
+guard proves the series EXISTS — only the operator can say it is the right one, which is
+what `forget_binding` is for.
+
+**Provenance is surfaced.** `resolve_series` returns `from_chat_memory`, and the reason
+line names the `forget_binding` call that would undo it. A remembered answer that looks
+identical to a fresh catalog match gives the operator nothing to correct. `health` reports
+the store path and entry count for the same reason.
+
+**Identity trade (D12).** The filename uses a readable slug from `preferred_username`,
+with the immutable `sub`/`oid` recorded inside the file. Changing your UPN therefore
+starts a fresh file and re-asks some parks — recoverable — whereas a GUID filename would
+make the store unauditable by the person who owns it. On stdio there is no token and no
+second operator, so the slug is a fixed `local`.
+
+Failure modes are all toward forgetting rather than toward a wrong chart: an unreadable
+or half-written store reads as empty memory, and writes go through a temp file in the same
+directory followed by `os.replace`, which is atomic on Windows and POSIX alike.
+
 ### §15.4 Build order
 
 1. **§15.1a `transform_key`** — **DONE.** Had to precede any new raise, or the legend keys
@@ -2634,7 +2664,7 @@ Promoting a chat entry into the daily store stays out of scope, gated behind G9d
 3. **§15.1d window units** — **DONE.** Zero blast radius on history.
 4. **§15.2 tie-break** — **DONE.** Mirrors bind `usecon`; different series park with the
    evidence attached.
-5. **§15.3 chat store** — makes the remaining parks amortize.
+5. **§15.3 chat store** — **DONE.** Makes the remaining parks amortize.
 6. Run `fixtures/g19f_baseline_commentary.md` end to end and record park count and quality
    (G19f).
 
@@ -2653,8 +2683,8 @@ have been asked. The parked-slot widget (§16) stays after all of it.
 | G19d | **MET.** A true database mirror binds; genuinely different series still park, naming the differing fields |
 | G19e | **MET.** Unreachable DLX metadata parks rather than guessing |
 | G19f | Park count AND quality on `fixtures/g19f_baseline_commentary.md`. Judge quality, not only count: every park must name the evidence that separates its candidates. Charts 5, 8, 10 are the compound-transform cases; chart 7 the two-transforms-one-ticker legend case; chart 4 the §15.1d window-unit case |
-| G19g | `forget_binding` removes a chat-store entry and the next resolve re-asks |
-| G19h | A park resolved in one chat is not re-asked in the next chat, same operator |
+| G19g | **MET.** `forget_binding` removes a chat-store entry and the next resolve re-asks |
+| G19h | **MET.** A park resolved in one chat is not re-asked in the next, same operator; the chat entry overrides the daily entry it shadows. Proved end to end against live DLX: "Personal Saving Rate" parks, is remembered as `YPSVR@USECON`, and binds from memory in a fresh module state |
 
 ### §15.6 Process note — there are TWO test suites
 

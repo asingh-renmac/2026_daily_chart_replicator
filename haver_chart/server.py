@@ -190,13 +190,61 @@ def resolve_series(
     exact_token_match, candidates, reason, freq_resolved, agg_resolved, and `slot` —
     a render-ready block to pass straight into `render_chart`'s `series` list.
 
-    Read-only: this tool never writes the learning stores.
+    Never writes the daily learning stores. If `from_chat_memory` is true, this bind
+    came from a park THIS operator resolved earlier (see `remember_binding`).
     """
     try:
         return lane.resolve_one(
             base_descriptor=base_descriptor, applied_transform=applied_transform,
             formula=formula, sa_hint=sa_hint, freq_hint=freq_hint, axis=axis,
             lag=lag, plot_kind=plot_kind)
+    except Exception as exc:
+        raise ToolError(lane.explain(exc))
+
+
+@mcp.tool
+def remember_binding(base_descriptor: str, code_at_db: str, note: str = "") -> dict:
+    """Remember that `base_descriptor` means `code_at_db`, so the same park never
+    re-asks in a later chat.
+
+    CALL THIS ONLY AFTER THE OPERATOR HAS CHOSEN. It records a human decision; it is
+    not a way to make your own pick stick. Two situations, both from the operator's
+    explicit answer:
+
+      * `resolve_series` parked and the operator said which candidate is right;
+      * `resolve_series` bound the WRONG series automatically and the operator gave
+        the correct ticker. The remembered answer then overrides the automatic one.
+
+    Do NOT call it on a ticker you inferred, or on one the operator has not looked at.
+    The code is DLX-confirmed before it is stored, which proves the series exists — it
+    cannot prove the series is the one they wanted.
+
+    The store is private to the signed-in operator and is layered over the daily
+    learning stores at lookup time; it never writes into them.
+
+    Returns: stored, operator, description, code, dlx_descriptor (what DLX says that
+    ticker actually is — worth showing the operator as a receipt), store path, added.
+    """
+    try:
+        return lane.remember_binding(base_descriptor=base_descriptor,
+                                     code_at_db=code_at_db, note=note)
+    except Exception as exc:
+        raise ToolError(lane.explain(exc))
+
+
+@mcp.tool
+def forget_binding(base_descriptor: str) -> dict:
+    """Remove a remembered binding for `base_descriptor` from this operator's chat
+    memory, so the next resolve asks again.
+
+    Use when a remembered bind turns out to be wrong. Only this operator's chat memory
+    is editable — a bind inherited from the daily learning stores cannot be removed
+    here, and `removed: false` with a note says so.
+
+    Returns: removed (bool), operator, description, store path, note.
+    """
+    try:
+        return lane.forget_binding(base_descriptor=base_descriptor)
     except Exception as exc:
         raise ToolError(lane.explain(exc))
 
