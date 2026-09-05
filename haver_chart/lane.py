@@ -81,6 +81,8 @@ TRANSFORM_PHRASES = (
     "Z-Score",
     "Log",
     "% Change - Year to Year of 3-month moving average",
+    "3-month moving average of the monthly change",
+    "% Change - Year to Year, Z-Score",
 )
 
 PLOT_KINDS = ("line", "bar", "stacked_bar")
@@ -90,10 +92,13 @@ _LINE_WORDS = ("line", "lines", "curve", "curves")
 def transform_help() -> str:
     """The accepted `applied_transform` wordings, for an operator to restate one."""
     return ("recognized wordings include " + "; ".join(f"{p!r}" for p in TRANSFORM_PHRASES)
-            + ". Haver's aggregation/units line ('Avg, % p.a.', 'Sum, Mil.$') is NOT a "
-              "transform — leave applied_transform empty for those. Year-to-date and "
-              "index/rebase are recognized but unsupported: pass the chart's formula "
-              "instead.")
+            + ". These COMPOSE to any depth, in either direction: 'A of B' applies B "
+              "first, 'A, B' applies A first — so 'z-score of the 3-month moving average "
+              "of the year-to-year % change' and '% change - year to year, 3-month moving "
+              "average, z-score' are the same chart. Haver's aggregation/units line "
+              "('Avg, % p.a.', 'Sum, Mil.$') is NOT a transform — leave applied_transform "
+              "empty for those. Year-to-date and index/rebase are recognized but "
+              "unsupported: pass the chart's formula instead.")
 
 
 # The shared raise ends by telling a DEVELOPER to extend the mapper, which is the right

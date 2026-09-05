@@ -9,6 +9,7 @@ does not see the tool, the problem is the config file or the restart — not the
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -173,6 +174,85 @@ for phrase in lane.TRANSFORM_PHRASES:
         unmapped.append(f"{phrase!r} -> {type(exc).__name__}")
 check(not unmapped, "every advertised transform wording still maps",
       "; ".join(unmapped) if unmapped else f"{len(lane.TRANSFORM_PHRASES)} wordings")
+
+# The compositional parser (§15.1b) against its fixture (§15.1c). The fixture holds
+# every applied_transform the daily lane has ever rendered — flat ones pinned to the
+# output the pre-parser mapper gave (the G19a no-drift proof) and compound ones pinned
+# to the formula that ACTUALLY SHIPPED, so the ledger judges, not the author. The
+# raising rows matter as much as the mapping ones: a compound phrase the grammar cannot
+# read must fail LOUD (D6), because the alternative is not a park — it is a chart that
+# plots a 3mma of the level when the words said 3mma of the monthly change.
+_fixture = _REPO_ROOT / "fixtures" / "transform_phrases.json"
+check(_fixture.exists(), "the transform-phrase fixture is present", str(_fixture))
+if _fixture.exists():
+    _cases = json.loads(_fixture.read_text(encoding="utf-8"))["cases"]
+    _wrong, _flat = [], 0
+    for _c in _cases:
+        _want, _should_raise = _c.get("expect"), _c.get("raises", False)
+        if _c.get("source") == "ledger-flat":
+            _flat += 1
+        try:
+            _got = lane.BC.phrase_to_haver(_c["phrase"], "X")
+            if _should_raise:
+                _wrong.append(f"{_c['phrase']!r} should raise, gave {_got!r}")
+            elif _got != _want:
+                _wrong.append(f"{_c['phrase']!r} -> {_got!r}, want {_want!r}")
+        except ValueError as _exc:
+            if not _should_raise:
+                _wrong.append(f"{_c['phrase']!r} raised: {_exc}")
+            elif "'" not in str(_exc):
+                # A raise that does not QUOTE the fragment it choked on sends the
+                # operator back to re-guess the whole phrase.
+                _wrong.append(f"{_c['phrase']!r} raised without quoting the bad part: {_exc}")
+    check(not _wrong, "every fixture phrase maps to its pinned formula",
+          "; ".join(_wrong[:3]) if _wrong else f"{len(_cases)} phrases, {_flat} of them "
+          f"flat and byte-identical to the pre-§15.1b mapper")
+
+# The exact-match tie-break (§15.2). DLX metadata is INJECTED rather than fetched, so
+# these assert the decision rules and not the state of two particular Haver series —
+# a live pair can be re-sourced or re-based and turn a logic test into a flake.
+_BLS = {"shortsource": "BLS", "longsource": "Bureau of Labor Statistics",
+        "startdate": "1939-01-31", "enddate": "2026-08-31", "numobs": 1052,
+        "frequency": "M", "aggtype": "AVG", "magnitude": 3, "datatype": "Units",
+        "diftype": 0, "group": "E30", "decprecision": 0, "geography1": "111",
+        "datetimemod": "2026-09-04 08:30:00"}
+lane.R._METADATA_CACHE.update({
+    # A genuine mirror: differs ONLY on catalog bookkeeping and refresh time.
+    "m@usecon": dict(_BLS), "m@labor": dict(_BLS, group="E40", enddate="2026-07-31",
+                                            datetimemod="2026-09-04 08:37:00"),
+    # Mirrors of one series, neither of them in usecon.
+    "n@labor": dict(_BLS), "n@empl": dict(_BLS, group="E55"),
+    # Two different series that share a descriptor (the 2026-09-04 slot A shape).
+    "d@usecon": dict(_BLS), "d@bci": dict(_BLS, shortsource="CB",
+                                          longsource="The Conference Board",
+                                          startdate="1945-01-31", numobs=979),
+    "gone@usecon": None, "gone@bci": None,      # DLX unreachable
+})
+
+
+def _tie(codes):
+    return lane.R.break_exact_tie(
+        [{"code": c, "descriptor": "", "sim": 1.0, "exact": True,
+          "via_query": "q", "agg": "AVG"} for c in codes])
+
+
+_pick, _why = _tie(["m@usecon", "m@labor"])
+check(_pick is not None and _pick["code"] == "m@usecon",
+      "a database mirror binds the usecon copy instead of parking",
+      _why[:88] if _pick else f"PARKED: {_why[:70]}")
+
+_pick, _why = _tie(["d@usecon", "d@bci"])
+check(_pick is None, "two different series sharing a descriptor still park")
+check(_pick is None and "shortsource" in _why and "979" in _why,
+      "the park names the evidence that separates them", _why[:96])
+
+_pick, _why = _tie(["n@labor", "n@empl"])
+check(_pick is None and "usecon" in _why,
+      "mirrors with no usecon copy park rather than invent a database order")
+
+_pick, _why = _tie(["gone@usecon", "gone@bci"])
+check(_pick is None and "unavailable" in _why,
+      "unreachable DLX metadata parks — it never falls back to a guess")
 
 for raw, want in (("bar", "bar"), ("columns", "bar"), ("stacked bars", "stacked_bar"),
                   ("line", "line"), ("", "line")):

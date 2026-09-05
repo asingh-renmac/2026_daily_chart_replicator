@@ -1812,7 +1812,7 @@ The gate that matters is **parity**, and it reuses machinery that already exists
 | Gate | What | Status |
 |---|---|---|
 | G10a | This section signed off | **open — Aman** |
-| G10b | **STOP** — AVD reconnaissance: DLX answers a non-interactive caller and survives a disconnected session; `cloudflared` permitted | **PASSED IN PART 2026-08-23 (§14.16).** DLX serves a non-interactive caller with the **desktop app closed** — the Python API needs the credential, not the window. An **expired** credential raises a GUI login modal, so the un-credentialed path blocks rather than fails. **Outstanding: the disconnected-session watch verdict.** |
+| G10b | **STOP** — AVD reconnaissance: DLX answers a non-interactive caller and survives a disconnected session; `cloudflared` permitted | **PASSED 2026-08-25 (§14.16, §14.16a).** Interactive half: DLX serves with the desktop app closed; an expired credential raises a GUI modal (2026-08-23). Durability half: 36/36 cycles PASS on both the in-process handle and a cold interpreter, 6.0h on `RM-AVD-1` (`dlx_watch_RM-AVD-1_20260825_041315.log`). The log cannot itself prove the RDP window was closed; Aman ran it as the disconnect watch. 6.0h is the measured window, not the 16h default — long enough to close "does it survive a disconnected session?", not a claim about a full unattended night. |
 | G10c | §14.5 fixes landed; daily lane green | **PASSED 2026-08-23 — selftest 37/37, workflow 254/254, transforms 43/43, `run_daily --selftest` ALL PASS, lane equivalence still 6/6 (§14.15)** |
 | G10d | Transport swap; HTTP server serves tools on loopback; fail-fast proven with auth vars unset | **PASSED 2026-08-23 — `scripts/g10d_http_check.py` 8/8; stdio handshake unchanged, `/mcp` 401 unauthenticated (§14.17)** |
 | G10e | Tunnel + Entra live; `/health` public; connector completes browser sign-in | **PASSED 2026-08-24 (§14.19).** `chart.hvr-mcp.work` live over a named Cloudflare tunnel (4 QUIC edge connections); `/health` verified from the AVD, from a second machine and from a phone on cellular; `/mcp` **401** unauthenticated; Entra single-tenant app with `read` scope, token v2, assignment required, one name assigned; Claude Desktop custom connector signed in and listing both tools |
@@ -1990,6 +1990,32 @@ converts one stuck call into a dead server, so it needs a guard:
 
 Neither is speculative hardening: the modal in the screenshot is the mechanism, and the
 weekly expiry is the schedule on which it arrives.
+
+### 14.16a Disconnected-session watch (G10b durability, 2026-08-25)
+
+`scripts/g10b_dlx_watch.py` on `RM-AVD-1` as `madz`, interpreter
+`C:\Users\madz\envs\haver-chart\Scripts\python.exe`, probe `LR@USECON` from 2025-01-01.
+
+- Started 2026-08-25 04:13:15, ended 10:13:15 (`--hours 6`, every 10 minutes).
+- **36 cycles, 36/36 PASS** on both columns. Every cycle pulled 19 rows, last observation
+  2026-07.
+- Script verdict: *"DLX answered every cycle for 6.0h, including from a cold interpreter.
+  G10b PASSES on durability."*
+- Log: `P:\Econ\asingh\dlx_watch_RM-AVD-1_20260825_041315.log` (copy of
+  `C:\Users\madz\Work\asingh\haver-mcp-test\outputs\g10b\…`).
+
+The cold-interpreter column is the load-bearing one. It is the server after a restart:
+a fresh process, `Haver.direct("on")` from nothing, then a pull. That succeeding for
+six hours means a recycled service can come back without anyone at the keyboard, which
+is the finding a dedicated VM needs. The in-process column only says the long-lived
+handle did not rot in that window.
+
+**What this does not prove, recorded rather than implied.** The file cannot see whether
+the RDP window was closed; that is Aman's report. Six hours is not sixteen; a session
+idle policy that fires at eight hours would not have been visible here. And the weekly
+credential expiry is a different clock — this run sat inside a signed-in week.
+
+G10k in §14.22 is satisfied by the 6.0h number.
 
 ### 14.17 Phase 2 built — the transport swap (G10d, 2026-08-23)
 
@@ -2206,12 +2232,10 @@ foreground windows that die with the session, the host is pooled, and idle polic
 sign the session out. That is why a dedicated always-on Windows VM is the destination,
 and why it is a separate decision from "the tools work."
 
-**Do not start this until three things land.** The overnight watch (G10b's outstanding
-half, §14.9(b)) measures whether DLX survives a disconnected session — a dedicated VM
-that still needs someone logged in is just a more expensive AVD. G10f needs a real
-connector PNG, because a host that draws different pixels is not a replacement. And G17e
-(co-tenancy of the two processes against one DLX) should be measured on the AVD first,
-where a failure is cheap.
+**Do not start this until the remaining two land.** The overnight watch is done
+(§14.16a): 6.0h, 36/36, both probes. G10f still needs a real connector PNG, because a
+host that draws different pixels is not a replacement. And G17e (co-tenancy of the two
+processes against one DLX) should be measured on the AVD first, where a failure is cheap.
 
 #### Why a dedicated VM, not a bigger AVD
 
@@ -2317,6 +2341,538 @@ Unchanged, on purpose:
 
 | Gate | What it proves |
 |---|---|
-| G10k | Overnight watch (G10b remaining half) recorded a duration |
+| G10k | Overnight watch (G10b remaining half) recorded a duration | **PASSED 2026-08-25 — 6.0h, 36/36 both probes (§14.16a)** |
 | G10l | VM `/health` answers after a reboot with nobody logged in |
 | G10m | Cutover: same public URLs, connectors unchanged, one live pull + one live render from a phone |
+
+---
+
+## §15. Resolver repair — words→formula, mirror tie-break, chat memory (PROPOSAL)
+
+### §15.0 What prompted this
+
+Building charts **from a commentary** rather than from a pasted screenshot is a new
+workload, and on 2026-09-04 it exposed three things at once: seven of eleven slots
+parked (several on candidates that scored an exact match), and a request for "3-month
+moving average of the monthly change" that came back as a moving average of the
+*level*, with the lane asking for a Haver formula instead.
+
+None of this is a regression. Every finding below is the daily lane's own long-standing
+behaviour meeting an input shape it was never given before. The screenshot path hides
+all three, which is why months of use did not surface them.
+
+**The distinction that organizes this section:** a *pasted chart usually prints its
+formula*, so the operator passes it verbatim and the slot goes down the `formula` path.
+A *commentary prints nothing*, so the model has only words and the slot goes down the
+`applied_transform` path. Those two paths do not have equal expressive power, and
+almost everything here follows from that asymmetry.
+
+### §15.1 Phase 1 — natural language cannot reach a nested formula
+
+#### The asymmetry, measured
+
+The evaluator is fully compositional. Verified 2026-09-04 against cached `gdph@usecon`:
+
+    zs(difa%(movv((NRS - NRSI7),3),3))   parses — arbitrary depth, BinOps included
+    movv(diff(GDPH,1),3)                 evaluates — n=46, last=80.9333
+    zs(movv(diff(GDPH,1),3))             evaluates — n=46, last=-0.2988
+
+The phrase translator is not. `build_chart.phrase_to_haver` emits **one** function
+application, plus exactly one hardcoded two-level shape (`<head> of <N> moving
+average`). Same run:
+
+    "3-month moving average of the month-over-month change"        → movv(GDPH,3)
+    "z-score of the 3-month moving average of the monthly change"  → zs(movv(GDPH,3))
+
+So the chart asked for on 2026-09-04 *already computes correctly* — `movv(diff(X,1),3)`
+is one line of G3 the evaluator handles today. The only thing standing between a
+sentence and that string is a translator that cannot nest. This is **not** an argument
+for computing transforms in pandas: the fix emits the same G3 string the signed-off
+evaluator already consumes, so pull, evaluate, label, render and `check_last_value` are
+all untouched.
+
+#### The silent-drop, and why no chart was ever wrong
+
+A phrase the flat mapper cannot fully consume is not rejected — the first branch that
+matches the *head* wins and the remainder is discarded. `"3-month moving average of the
+m/m difference"` matches `"moving"` and returns `movv(X,3)`; `transform_label` then
+labels the chart from the outer function, so the subtitle agrees with what was drawn
+and nothing on the page contradicts it. That is the silent-wrong class §13.7 exists to
+prevent, reachable through a door the guard does not cover: the one composition rule
+guards MA-as-inner and there is no mirror for MA-as-outer.
+
+**Audit (2026-09-04, read-only).** 27 distinct `applied_transform` phrases across 102
+ledger slot-rows; 14 rows carry a compound phrase. **Every one of those 14 also carries
+an explicit `formula`,** and `render_row` branches on `if s.get("formula")` — the phrase
+is never passed to `phrase_to_haver`. The formulas were all correct
+(`zs(yryr%(GDPH))`, `difa%(movv(NMSCNX,3),3)`, `zs(difa%(PCUSERH,6))`,
+`zs(movv(NFIB6,3))`). **No shipped chart was affected.** The defect is latent and
+reachable only from the words-only path — i.e. from commentary-driven building.
+
+#### §15.1a `transform_key` must be fixed FIRST (the real blast radius)
+
+`resolve.transform_key` derives the legend-store key from the *phrase*, wrapped in a
+bare `except` that falls back to `""`. Two consequences, and the second is why the
+ordering is not negotiable:
+
+1. **Pre-existing under-qualification.** For a compound-phrase slot the key is weaker
+   than the math: `ZS(#)` where the formula is `ZS(YRYR%(#))`. The store holds 79
+   entries, 7 under `ZS(#)`, including `GDPH@USECON|ZS(#)` and `LAPRIVA@LABOR|ZS(#)`
+   whose stored labels describe a *y/y* z-score. A future plain `zs(gdph)` level chart
+   would inherit that label — the 2026-07-30 collision class, one ticker two
+   transforms, in miniature.
+2. **A new raise would silently orphan those 7 keys.** Because the `except` swallows it,
+   `phrase_to_haver` raising does not crash — it empties the transform key, changes the
+   legend key, and shifts legend text on charts that currently look right.
+
+Fix: canonicalize the slot's **own `formula`** when it has one, falling back to the
+phrase only when it does not. Correct on its own merits (for a formula slot the formula
+*is* the math) and it is what holds the legend keys stable when §15.1b lands.
+
+**Migration (decision D1) — DONE 2026-09-04. The estimate of "3 entries" was low: the
+measured answer is 8.** The mapping was never hand-typed. `scripts/migrate_legend_keys.py`
+replays every slot in `data/ledger_*.csv` through both the old and the new key function
+and re-files only where the store actually holds the old key. Sweep result:
+
+| | count |
+|---|---|
+| distinct legend keys in the ledger | 130 |
+| keys UNCHANGED by the fix | 111 |
+| keys that move | 19 |
+| ...of which the store holds a label → re-filed | **8** |
+| ...of which the store holds nothing → nothing to carry | 11 |
+
+The 8, with the label each was holding — note that every label already *described* the
+transform its key had dropped, which is the defect stated in evidence rather than theory:
+
+| Entry | Re-filed as | Label it was holding |
+|---|---|---|
+| `GDPH@USECON\|ZS(#)` | `ZS(YRYR%(#))` | Real GDP **(y/y %chg)** |
+| `GDP@USECON\|ZS(#)` | `ZS(YRYR%(#))` | GDP **(y/y% chg)** |
+| `LAPRIVA@LABOR\|ZS(#)` | `ZS(YRYR%(#))` | All Employees: Total Private **(y/y% chg)** |
+| `FNEH@USECON\|YRYR%(#)` | `ZS(YRYR%(#))` | Real Nonres Fixed Invest: Equipment (y/y% chg) |
+| `JCSXEHM@USECON\|YRYR%(#)` | `ZS(YRYR%(#))` | PCE Core Svcs ex Housing (y/y %chg) — **copy, see below** |
+| `NFIB6@SURVEYS\|MOVV(#,3)` | `ZS(MOVV(#,3))` | NFIB: Net % Reporting Higher Sales (SA, 3mma) |
+| `FWILL@SURVEYS` *(unqualified)* | `ZS(#)` | Banks Willingness to Lend (%. lagged by 4qtrs) |
+| `YPSVR@USECON` *(unqualified)* | `ZS(YRYR(#))` | Personal Saving Rate **(Z-score of y/y difference)** |
+
+The last two were filed with **no transform qualifier at all** while holding a
+transformed label — a bare-key entry is reachable by `lookup_legend`'s `allow_base`
+fallback, so any future *level* chart on `YPSVR` would have rendered "Z-score of y/y
+difference" over a plain saving-rate line.
+
+**One old key served two different slots — so re-filing is not always a move.**
+`JCSXEHM@USECON|YRYR%(#)` was the key both for a slot carrying `zs(yryr%(JCSXEHM))`
+(which now asks for `ZS(YRYR%(#))`) *and* for a phrase-only y/y slot with no formula
+(which still asks for `YRYR%(#)`). Moving it stranded the second slot on the bare base
+key, where it picked up the neighbouring `3m %chg saar` label — caught by the replay,
+not by reading. The script now COPIES whenever the old key is still live in the new
+scheme, and MOVES otherwise: 7 moves, 1 copy, store 79 → 80 entries.
+
+**Regression proof.** All 142 distinct ledger slots were looked up against the
+pre-migration store under the old keys and the post-migration store under the new keys.
+89 had a stored label; **0 lost, 0 swapped**. `selftest.py` 41/41. A second `--apply` is
+a no-op, so the migration is idempotent and re-runnable after any later ledger growth.
+
+#### §15.1b The compositional parser
+
+**Not** a corpus, **not** a lookup table of examples, and nothing learned at runtime. A
+table cannot cover unbounded nesting — that is the failure mode a grammar does not have.
+
+*Atoms are finite and already written.* `_flat_transform` implements the closed Haver G3
+transform set — seven families, each with plain/percent/log variants: `MOV[V|T|A]`,
+`ZS`, `LN`, `YRYR`, `DIFA`, `DIFV`, `DIFF`. Reuse those rules; do not restate them.
+
+*Composition needs two rules, and they nest in opposite directions.* Ground truth from
+the ledger, not invention:
+
+| Marker | Direction | Evidence |
+|---|---|---|
+| `A of B` | B is inner → `A(B(x))` | `"Z-Score of Year-to-Year % Change"` shipped as `zs(yryr%(X))` |
+| `A , B` / `A ; B` | left-to-right, A is inner → `B(A(x))` | `"% Change - Year to Year, Z-Score"` shipped as `zs(yryr%(X))` |
+
+*A third comma sense must be handled explicitly:* in `"difa% of 3-term moving average,
+3-period"` the `", 3-period"` is a **parameter** of `difa%` (shipped as
+`difa%(movv(X,3),3)`), not another operation. Rule: a comma-part that parses as a bare
+number or `N-period` attaches as an argument to the preceding atom; anything else that
+does not parse as an atom **raises**.
+
+*Fail-loud is what makes an incomplete grammar safe* (decision D6, 2026-09-04, confirmed).
+Any phrase not fully consumed raises, and the operator supplies the Haver formula —
+today's escape hatch. Coverage gaps degrade to current behaviour, never to a wrong chart.
+The raise must name the part it could not read, so the operator knows which fragment
+needs a formula rather than re-guessing the whole phrase.
+
+*Routing preserves history exactly.* A phrase with no composition marker goes through
+the flat mapper unchanged; only compound phrases reach the parser.
+
+**Correction to G19a as first written.** "All 27 historical phrases must map
+byte-identically" cannot hold and must not: six of the 27 are compound, and their
+current output is the defect. The gate that is actually provable, and now proved:
+
+- the **flat** phrases map byte-identically (17 of 27) — the no-drift half;
+- the **compound** phrases change to the formula the ledger shows they shipped, so the
+  history judges the parser rather than the author;
+- the **formula-shaped** phrases stop guessing.
+
+#### §15.1b — DONE 2026-09-04, and what the ledger actually contained
+
+27 distinct phrases, classified by replaying each through the mapper and comparing with
+the formula that shipped beside it:
+
+| Class | Count | Before → after |
+|---|---|---|
+| flat, already correct | 17 | unchanged, byte for byte |
+| compound, silently truncated | 6 | now composed; all 6 match the shipped formula |
+| a transcribed formula, not a description | 3 | now a precise raise |
+| deliberate divergence | 1 | see below |
+
+The six were losing half their math in silence: `"% Change - Year to Year, Z-Score"`
+gave `zs(#)` — a z-score of the **level** — where `zs(yryr%(GDPH))` shipped, and
+`"3-month moving average, z-score"` gave `movv(#,3)`, dropping the z-score entirely.
+Worst of the three formula-shaped reads: `"zs(difa%(movv(...,3),3))"` came back as
+`diff%(#,3)`, math with no relation to the phrase at all.
+
+**Two silent drops the plan had not anticipated, found by testing rather than reading:**
+
+1. *A window attached to a function that takes none.* `"z-score of 6-month moving
+   average, 12-period"` parked the `12` on `zs`, which has no window argument, and the
+   number vanished. Guarded by construction: if appending the window leaves the mapped
+   formula unchanged, it was not consumed, and the parser raises.
+2. *"growth" says nothing about percent.* `"2-quarter annualized growth"` could be
+   `difa(#,2)` or `difa%(#,2)`, which plot on different scales. It raises and says so,
+   rather than picking one. (Cost: chart 4 of the G19f commentary is worded this way and
+   will ask for a formula. That is D6 working, not failing.)
+
+**The deliberate divergence.** `"6-month %Change; z-score"` now yields `zs(diff%(#,6))`
+where the ledger shipped `zs(difa%(PCUSERH,6))`. The words never say *annualized*, and
+the sibling phrase `"6-month %Change-ann"` — also in the ledger — does. Reading
+annualization in from silence is exactly the guess that produced the 2026-07-30
+GDP 3.35-vs-6.81 error. The parser stays faithful to the words; the `formula` field
+remains the override, which is how that row got its `difa%` in the first place.
+
+**Regression proof.** With §15.1a and §15.1b both live and the store migrated, all 142
+distinct ledger slots were re-looked-up: **0 labels lost, 0 swapped**. `selftest.py`
+43/43.
+
+#### §15.1c The fixture — DONE 2026-09-04
+
+`fixtures/transform_phrases.json`: `phrase → expected formula`, **42 cases**, asserted
+by `selftest.py`. JSON rather than YAML so the test adds no dependency the AVD might not
+have. Seeded by extracting the 27 ledger phrases automatically, then extended by hand
+with nesting the history does not contain — three levels deep in both directions, and
+the pair `"z-score of the 3-month moving average of the year-to-year % change"` /
+`"% change - year to year, 3-month moving average, z-score"`, which must produce the
+same formula through opposite markers.
+
+Each row carries a `source`: `ledger-flat` (pinned to the pre-§15.1b output, the
+no-drift half of G19a), `ledger-compound` (pinned to the formula that shipped), or
+`hand`. Rows with `raises: true` are asserted to raise **and to quote the fragment they
+choked on** — a raise that does not name the bad part sends the operator back to
+re-guess the whole phrase.
+
+**Read only by the test.** If the parser ever consults it at resolve time, this design
+has failed.
+
+### §15.2 Phase 2 — two exact matches park with no tie-break
+
+`resolve_slot` binds on `len(exact) == 1`. The Jaccard fallback sits under `elif not
+exact`, so **two** exact matches reach no branch at all and park. Two exacts are served
+strictly worse than zero. Verified against the 2026-09-04 slot A:
+
+    lrtmanua@usecon   sim=1.0  exact=True
+    a0m001@bci        sim=1.0  exact=True     → n_exact=2 → PARK
+
+Haver mirrors the same series across `usecon` / `bci` / `labor` / `empl` under a
+byte-identical descriptor, and `descriptor_exact` compares normalized token sets with
+the units parenthetical stripped — so the normalization that makes matching robust also
+guarantees mirrors are indistinguishable. There is no database preference anywhere in
+`src/`.
+
+#### The catalog metadata is too thin to judge a tie — Haver's own is not
+
+`haver_search.get_meta` returns **four** fields (`descriptor`, `frequency`, `agg_type`,
+`sa_status`). On those four the 2026-09-04 slot A looks like a perfect mirror, which is
+why an early reading of this section concluded "auto-bind `usecon`". That conclusion was
+**wrong**. `Haver.metadata(code, db)` returns **eighteen** fields and settles it
+(measured 2026-09-04, DLX Direct, **~560 ms per call**):
+
+| field | `lrtmanua@usecon` | `a0m001@bci` |
+|---|---|---|
+| shortsource | **BLS** | **CB** (The Conference Board) |
+| startdate | 2006-03-31 | **1945-01-31** |
+| enddate | **2026-08-31** | 2026-07-31 |
+| numobs | 246 | **979** |
+| datetimemod | 2026-09-04 08:30 | 2026-08-20 10:03 |
+
+**These are two different series from two different statistical agencies.** The resolver
+was RIGHT to park slot A. The defect was never that it parks — it is that the park
+message ("both scored 1.0, similarity is not evidence") is *unanswerable*, when the
+evidence to answer it was one cheap call away.
+
+This reframes the whole complaint. §15.2 is not primarily a park-reduction change; it is
+a **park-quality** change. "BLS 2006→2026-08, 246 obs — or Conference Board 1945→2026-07,
+979 obs?" is a question an economist answers in one second.
+
+#### Which fields discriminate, and which must not
+
+Not every differing field means a different series. `LANAGRA@USECON` vs `LANAGRA@LABOR`
+match on source, start, end, obs count, descriptor and aggregation, and differ **only**
+on `group` (E30 vs E40) — a catalog filing tag, not a property of the data. Treating
+`group` as discriminating would over-park a genuine mirror.
+
+- **Discriminating (data-bearing):** `shortsource`/`longsource`, `startdate`, `numobs`,
+  `frequency`, `aggtype`, `descriptor`, `magnitude`, `datatype`, SA status.
+- **NOT discriminating (catalog bookkeeping):** `group`, `decprecision`, `datetimemod`,
+  the `geography` codes.
+- **`enddate` alone is not a difference** — a mirror can simply be refreshed on a
+  different schedule. When every other data-bearing field matches, prefer the candidate
+  with the later `enddate`; it is the same series, one copy is fresher.
+
+**Resolution, in order:**
+
+1. **Fetch `Haver.metadata` for the tied candidates only.** ~560 ms each; at most two or
+   three per tied slot, and only for slots that actually tie. Cache per process. This is
+   metadata, not observations — it is not the full-verify pull that was rejected.
+2. **Any data-bearing field differs → park** (decision D2, 2026-09-04), and show the
+   differing fields. This also closes a real hole: `_UNIT_TOK` drops `sa`/`nsa`, so an SA
+   and NSA twin both come back exact whenever `sa_hint` is absent.
+3. **All data-bearing fields match → true mirror → bind the `usecon` candidate.**
+   Geography is self-resolving: `usecon` holds only US series, so its *presence in the
+   tie* is the evidence that the series is US-scoped. This preference can never reach for
+   `usecon` on a non-US request, because it would not be a candidate.
+4. **True mirrors with no `usecon` among them → park and ask.** Do not invent an ordering
+   between `labor` and `empl`; a preference nobody has reasoned about is not evidence.
+   §15.3 makes that a question answered once rather than every morning.
+
+*Expected effect on the 2026-09-04 slots, from the measurements above:* `LANAGRA` binds
+(true mirror, `usecon` present); slot A parks, correctly, with the BLS-vs-Conference-Board
+evidence attached. `lapriva@usecon` ("Total Private Industries") vs `lapriva@labor`
+("Total Private") never tie in the first place — different token sets — so they do not
+enter this path at all.
+
+The founding gate is untouched: the `DFBACTS`/`DFBACTDS` incident (Jaccard 0.909, wrong
+directional sibling) involved *different* descriptors and lives in the non-exact
+fallback, which none of this modifies.
+
+#### §15.2 — DONE 2026-09-04
+
+`resolve.break_exact_tie` now runs whenever `len(exact) > 1`, the branch that previously
+existed only as a fall-through to parking. Live measurements against the two pairs this
+section was written around:
+
+| Candidates | Verdict | Evidence |
+|---|---|---|
+| `lrtmanua@usecon` vs `a0m001@bci` | **PARK**, correctly | differ on `shortsource`, `longsource`, `startdate`, `numobs` — BLS 2006→2026-08 246 obs vs CB 1945→2026-07 979 obs |
+| `lanagra@usecon` vs `lanagra@labor` | **BIND `usecon`** | identical on all nine data-bearing fields; differ only on `group` (E30/E40) and refresh minute |
+
+`Haver.metadata` measured at **~170–500 ms** per call, better than the 560 ms the plan
+budgeted, and cached per process — a repeat tie resolves in 0 ms. Only slots that
+actually tie pay anything.
+
+**`diftype` was added to the data-bearing list.** The plan enumerated both lists and
+`diftype` appeared in neither; it describes the series' difference basis, so it belongs
+with the data rather than with the catalog tags.
+
+**SA status needs no field of its own.** It lives in the descriptor's units parenthetical,
+and the units themselves surface as `magnitude` (Thous vs Mil) — sharper than comparing
+parenthetical text. This still closes the `_UNIT_TOK` hole the plan named: an SA and NSA
+twin that both come back exact will differ on `numobs`/`startdate` or `magnitude`.
+
+**One failure mode the plan had not accounted for.** `Haver.metadata` answers a failed
+query with an **ErrorReport dict** rather than raising — the same shape that produced the
+vague `haver-data` error earlier. A truthiness check sails straight past it, so the dict
+is rejected explicitly. Unreachable metadata parks; it never degrades to a guess.
+
+The park message is now answerable. Before: *"both scored 1.0, similarity is not
+evidence."* After: *"2 candidates match the descriptor exactly but DLX says they are
+different series (differ on longsource, numobs, shortsource, startdate) — lrtmanua@usecon:
+BLS, 2006-03-31 to 2026-08-31, 246 obs, M; a0m001@bci: CB, 1945-01-31 to 2026-07-31, 979
+obs, M."*
+
+Each tied slot also carries `slot["tie_metadata"]` — the full 18 fields per candidate,
+stringified — which is what the §16 picker will render as columns.
+
+Covered by five `selftest.py` checks with **injected** metadata rather than live series,
+so the decision rules are asserted and not the current state of two Haver tickers.
+
+#### Side benefit: the stale end-date problem
+
+`enddate` and `datetimemod` come from DLX itself, not from the Neon catalog mirror, so
+this same call answers the long-standing "the catalog's end date is stale" complaint —
+for the park message today, and for the §16 picker columns later.
+
+### §15.3 Phase 3 — the chat lane cannot remember (the ratchet)
+
+`seal_stores` makes the stores read-only from chat (§13.6), so every park resolved by
+eye is forgotten at end of turn and tomorrow's commentary parks the same slots. Parks
+never amortize. That, not the park rate itself, is what makes the lane feel worse over
+time.
+
+**One collated store, referenced not copied.**
+
+- **File:** `chat_learned.<operator>.json` in `CLARIFIED_KNOWLEDGE_DIR`, alongside the
+  four existing stores. **One file per operator** (decision D3, 2026-09-04), and within
+  that operator it is **one** file for all chats and all days — the server is a
+  long-running process with no concept of a chat session, so "a new chat" reads exactly
+  the same file. It starts **empty**.
+- **Operator identity comes from Entra.** Over HTTP the request is already authenticated,
+  so the token subject names the file. On a local stdio install there is no identity and
+  no second operator, so the suffix is a fixed `local`. This is the one piece of new
+  plumbing the per-operator choice costs: the lane currently never looks at who is
+  calling, and `server.py` must pass the identity into `lane.resolve_one`.
+- **Consequence, accepted deliberately:** a park you answer does not help a teammate, and
+  a teammate's mistake cannot reach your charts. Team-wide sharing stays available later
+  by promoting entries into the daily store, which is the G9d review — not by widening
+  this file.
+- **Seeding is by reference, not by copy.** A lookup reads the daily store and the chat
+  store as two layers. Day one behaviour is identical to a copy — all 102 learned
+  entries available immediately — but the chat lane also inherits every later daily
+  correction, where a physical copy would freeze a stale binding forever.
+- **Precedence: daily wins.** A daily entry passed `confirm_all`; a chat entry was
+  ratified by eye. Chat fills gaps, never shadows stronger evidence.
+- **One-way:** `run_daily` never reads `chat_learned.json`. §13.6 is preserved, not
+  amended.
+- **Write path lives in `haver_chart/`, never in `resolve.py`.** Then `seal_stores`
+  needs no carve-out and the boundary stays structural rather than an exception poked
+  through a tripwire.
+- **Written on an explicit human decision, never on an auto-bind** (decision D5,
+  2026-09-04): both when you resolve a parked slot AND when you *correct* a bind the lane
+  made on its own. A correction is the strongest evidence the lane will ever get; losing
+  it means being wrong the same way tomorrow.
+- **Removal is a server tool, not a text-editor job** (decision D4, 2026-09-04): a
+  `forget_binding` tool taking the description key, so a bad entry can be dropped from
+  the chat that noticed it. It writes only the per-operator chat store — it can no more
+  touch `learned`/`trusted`/`clarified` than any other chat-lane call (§13.6). Deleting a
+  key that is not there is a no-op, not an error, so the model cannot be goaded into
+  reporting a phantom success.
+- **Atomically.** Temp-then-rename plus a lock. `g4_lib`'s parquet cache writes with
+  neither and §14.5 already records why that is a defect; do not reproduce it in a file
+  two parallel tool calls can touch.
+- **Entry shape** mirrors `learned` (`key → {code, descriptor, added}`) plus provenance:
+  the phrase, the chart, and the candidates shown — so an entry is auditable and
+  revocable.
+
+Promoting a chat entry into the daily store stays out of scope and gated behind G9d.
+
+### §15.4 Build order
+
+1. **§15.1a `transform_key`** — **DONE 2026-09-04.** Had to precede any new raise, or
+   the legend keys shift underneath it; 8 store entries re-filed, 0 labels lost.
+2. **§15.1b parser + §15.1c fixture** — **DONE 2026-09-04.** 42-case fixture; 17 flat
+   phrases byte-identical, 6 compound ones fixed against the ledger, 3 now raise.
+3. **§15.2 tie-break** — **DONE 2026-09-04.** True mirrors bind the `usecon` copy;
+   genuinely different series still park, now carrying the evidence that separates them.
+4. **§15.3 chat store** — makes the remaining parks amortize.
+5. Re-run the commentary in `fixtures/g19f_baseline_commentary.md` end to end and record
+   park count and quality (G19f).
+
+Ordering rationale: 1 unblocks 2; 3 shrinks the park set that 4 has to remember; and
+doing 4 before 3 would build a memory of questions that should never have been asked.
+The parked-slot widget (§16) stays after all four — most of the parks it would display
+are the ones step 3 deletes, and its submit button has nowhere to write until step 4.
+
+### §15.5 Gates this section would add, if approved
+
+| Gate | What it proves |
+|---|---|
+| G19a | **MET 2026-09-04.** The 17 flat historical phrases map byte-identically before/after the parser lands; the 6 compound ones map to the formula the ledger shows they shipped; the 3 formula-shaped ones raise instead of guessing. Pinned in `fixtures/transform_phrases.json` (42 cases) and asserted by `selftest.py`, so it stays proved rather than proved-once |
+| G19b | `transform_key` derives from the formula; the 7 `ZS(#)` legend keys are unchanged or deliberately migrated |
+| G19c | `movv(diff(X,1),3)` reachable from words; every unconsumed compound raises |
+| G19d | Two exact mirrors differing in SA **park**; true mirrors bind `usecon`; mirrors with no `usecon` park |
+| G19e | A park resolved in one chat binds without asking in a **later** chat, and `run_daily` still never reads the chat store |
+| G19f | Park count on the jobs-report commentary in `fixtures/g19f_baseline_commentary.md` (supplied 2026-09-04 per decision D8; the earlier text is gone, so 7/11 is context, not a comparand). Judge park **quality**, not only count: every park must name the evidence that separates its candidates. Charts 5, 8, 10 are the compound-transform cases for §15.1b; chart 7 is the two-transforms-one-ticker legend case for §15.1a |
+| G19g | `forget_binding` removes a chat entry, is a no-op on an absent key, and cannot write `learned`/`trusted`/`clarified` (D4) |
+
+---
+
+## §16. Interactive widgets — parked-slot picker (PROPOSAL, blocked on §15)
+
+### §16.0 Status and why this was not written down before
+
+Phase A of the widget work — **guarantee every chart link reaches the reply** — shipped
+on 2026-09-02 (`server.py` mirrors `structured_content` into the text block and names
+the `chart_url`; `SKILL.md` and `SYSTEM_PROMPT.md` carry the matching instruction). It
+was implemented but never recorded here. Phase B, the interactive widget, was never
+recorded either. This section closes both gaps. The remaining Phase A verification is
+gate **G20a** below.
+
+### §16.1 What the picker is for
+
+When `resolve_slot` parks, the operator must choose a ticker from the top-3 candidates,
+and today that answer travels as typed text in the next prompt. With eleven cold slots
+in one commentary (2026-09-04) that is a table read on screen and an answer retyped by
+hand. A widget would let the operator click the row instead.
+
+Two behaviours are required, and the second is the one the current text flow handles
+worst:
+
+1. **Pick from candidates.** Show `code`, `descriptor`, `similarity`,
+   `exact_token_match` and the database — the columns `lane._candidates` already returns
+   — plus the discriminating columns §15.2 adds from `Haver.metadata`: **source**,
+   **start date**, **live end date** and **obs count**. Those four are what actually
+   separate two same-named candidates (slot A on 2026-09-04 was BLS-since-2006 versus
+   Conference-Board-since-1945), and the end date is DLX's own rather than the catalog's
+   stale copy. Selecting a row binds that slot.
+2. **Free text when nothing fits.** A park can return no relevant candidate at all
+   ("no confident/relevant match — human supplies `code@db`"). The widget must offer a
+   text field for that slot, or it is useless in exactly the case the operator most
+   needs help.
+
+### §16.2 Why this is sequenced after §15
+
+- **§15.2 deletes most of the rows the widget would display.** On 2026-09-04, slots A,
+  E and F parked only because two database mirrors both matched exactly. Those become
+  auto-binds. Building the screen first means designing for a table that is about to
+  get much shorter.
+- **§15.3 is where the submit button writes.** Without a chat store, a selection is
+  ratified, used once, and forgotten — a nicer way to answer the same question every
+  morning. The widget is the input surface for §15.3, not a replacement for it.
+
+Building §16 before §15 would produce a polished interface to a problem we are removing.
+
+### §16.3 The unknown that has to be settled first
+
+Interactive UI in the chat requires **MCP Apps (SEP-1865)**: the server publishes a
+`ui://` resource holding an HTML/JS bundle, and the client renders it inline and posts
+the result back as a tool call. Nothing in this stack has ever served one.
+
+Three things are unproven, in order of risk:
+
+1. Does the Claude client render a `ui://` resource from a **custom connector**, or only
+   from first-party integrations?
+2. Does the resource survive the **Cloudflare tunnel** and the **Entra** auth hop? The
+   bundle is fetched over the same authenticated channel as the tool calls.
+3. Does a widget submission arrive as a normal tool call the lane can serve without a
+   second code path?
+
+**G20b is a hello-world spike, not a feature.** Publish one `ui://` resource with a
+single button that returns a fixed string, through the live tunnel, from a real Entra
+session. If it does not render, §16 stops there and the answer is that natural-language
+picks stay — which is an acceptable outcome, because §15.2 and §15.3 have by then
+removed most of the asking.
+
+### §16.4 The chart-edit widget — deliberately NOT proposed
+
+The second widget idea from 2026-09-02 — edit the title, subtitle, legends and axis
+limits in a form, then re-render into a second tab — is recorded here as **rejected for
+now**, so it does not get re-raised without new information.
+
+A form can only expose fields somebody predicted. Chart edits are open-ended ("drop the
+second series", "start it in 2015", "make it bars", "put unemployment on the right
+axis"), and `render_chart` already accepts all of that from one sentence. A form would
+cover a fraction of the surface, and every edit outside it would fall back to typing
+anyway — so the form adds a second way to do a subset of what one sentence already does.
+
+The parked-slot picker is different, and the difference is the reason one is proposed
+and the other is not: a park has a **closed** answer set, computed by the resolver, that
+the operator must currently retype by hand. That is what a widget is good at.
+
+### §16.5 Gates this section would add, if approved
+
+| Gate | What it proves |
+|---|---|
+| G20a | Three charts rendered in one turn produce three `chart_url`s in the visible reply (Phase A, on the AVD) |
+| G20b | Spike: a hello-world `ui://` resource renders through the tunnel and Entra, and its submit arrives as a tool call — **STOP gate for the rest of §16** |
+| G20c | Picker binds a parked slot by click, and writes the choice to the §15.3 store |
+| G20d | Picker accepts a hand-typed `code@db` for a slot with no relevant candidate |

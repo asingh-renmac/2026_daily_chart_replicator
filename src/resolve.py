@@ -202,12 +202,70 @@ def legend_key_base(slot: dict) -> str:
     return code_key(code)
 
 
+def _formula_transform_shape(formula: str) -> str:
+    """The transform tag implied by an explicit G3 `formula`: operands replaced by `#`.
+
+    Returns "" when the expression applies NO transform — a bare series (`GDPH`) or a
+    composite operand (`NRS - NRSI7`), whose identity already lives in `legend_key_base`
+    via `expr_key`. Only a Func at the ROOT is a transform, so that test is the gate;
+    without it every composite would gain a spurious `|#-#` suffix and stop matching its
+    warmed store entry."""
+    import transforms as _T                  # local: build_chart imports resolve
+    node = _T.parse(formula)                 # raises → caller falls back to the phrase
+    if not isinstance(node, _T.Func):
+        return ""
+    shape = formula
+    # Longest-first so a mnemonic that is a prefix of another (NRS vs NRSI7) cannot
+    # partially consume it. The optional `@db` is swallowed with the code, so a
+    # qualified operand canonicalizes the same as a bare one.
+    for mn in sorted(_T.formula_mnemonics(formula), key=len, reverse=True):
+        shape = re.sub(rf"(?<![A-Za-z0-9_]){re.escape(mn)}(?:@[A-Za-z0-9_]+)?"
+                       rf"(?![A-Za-z0-9_])", "#", shape)
+    # Collapse a composite OPERAND to a single `#`. The tag names the transform chain;
+    # WHICH series it wraps is already in `legend_key_base` (`expr:NFIB7-NFIB6`), so
+    # leaving the arithmetic here would both duplicate it and change every warmed
+    # composite key — `ZS((#-#))` where the store holds `ZS(#)`. Each rule tells a
+    # function's ARGUMENT parens from a GROUPING paren by what precedes the `(`;
+    # treating them alike eats the call's own parens and yields a malformed `ZS(YRYR%#)`.
+    _CALL = r"(?<=[A-Za-z0-9_%])"
+    _GROUP = r"(?<![A-Za-z0-9_%])"
+    _OPERANDS = r"\(\s*#(?:\s*[-+*/]\s*#)+\s*\)"
+    # A composite operand also appears UNPARENTHESIZED as a call's first argument —
+    # `difa%(LGTPRIVA/PCU,3)` → `DIFA%(#/#,3)`. The `+` needs one operator, so a plain
+    # `movv(#,3)` cannot match and lose its window argument.
+    _BARE_OPERANDS = r"(?<=[A-Za-z0-9_%]\()\s*#(?:\s*[-+*/]\s*#)+\s*(?=[,)])"
+    while True:
+        collapsed = re.sub(_CALL + _OPERANDS, "(#)", shape)      # f(#-#)  → f(#)
+        collapsed = re.sub(_BARE_OPERANDS, "#", collapsed)       # f(#/#,3)→ f(#,3)
+        collapsed = re.sub(_GROUP + _OPERANDS, "#", collapsed)   # (#-#)   → #
+        collapsed = re.sub(_GROUP + r"\(\s*#\s*\)", "#", collapsed)  # ((#)) → (#)
+        if collapsed == shape:
+            break
+        shape = collapsed
+    return re.sub(r"\s+", "", shape.upper())
+
+
 def transform_key(slot: dict) -> str:
     """Canonical TRANSFORM tag for a slot, or "" for a level series.
 
-    Canonicalized on the derived G3 FORMULA (mnemonics replaced by `#`), not the read's
-    wording, so two spellings of the same math ("2-qtr %Change-ann" / "2-quarter % change
-    annualized" → `difa%(#,2)`) share one label, while genuinely different math does not."""
+    Canonicalized on the G3 FORMULA (operands replaced by `#`), not the read's wording,
+    so two spellings of the same math ("2-qtr %Change-ann" / "2-quarter % change
+    annualized" → `difa%(#,2)`) share one label, while genuinely different math does not.
+
+    The slot's OWN formula wins when it has one (§15.1a). Deriving the tag from the
+    phrase instead is under-qualified whenever the phrase is compound: `render_row`
+    ignores `applied_transform` once a `formula` is present, so a slot that RENDERED
+    `zs(yryr%(GDPH))` was keyed `ZS(#)` off the words "% Change - Year to Year, Z-Score"
+    — the y/y silently dropped by the flat phrase mapper. Two slots on one ticker, one a
+    z-score of the level and one a z-score of the y/y change, then collided on a single
+    key: the 2026-07-30 defect this qualification exists to prevent, reintroduced through
+    the phrase. The formula is what was actually drawn, so it is the honest source."""
+    formula = (slot.get("formula") or "").strip()
+    if formula:
+        try:
+            return _formula_transform_shape(formula)
+        except Exception:
+            pass                             # unparseable formula → fall back to words
     phrase = (slot.get("applied_transform") or "").strip()
     if not phrase:
         return ""
@@ -696,6 +754,128 @@ def _hit_code(h) -> Optional[str]:
     return (h.get("code") if isinstance(h, dict) else h) or None
 
 
+# ──────────────────── Exact-tie discrimination (§15.2) ───────────────────────
+# Fields that describe the DATA. If any of these differs, the two candidates are not
+# the same series and no amount of descriptor similarity says otherwise.
+#
+# `enddate` is deliberately absent: a mirror can be refreshed on a different schedule,
+# so a later end date means fresher, not different. SA status is absent because it
+# lives in the descriptor's units parenthetical, which is compared separately — and
+# units themselves surface here as `magnitude` (Thous vs Mil), which is sharper than
+# comparing the parenthetical text.
+_DATA_BEARING = ("shortsource", "longsource", "startdate", "numobs",
+                 "frequency", "aggtype", "magnitude", "datatype", "diftype")
+# Catalog bookkeeping, NOT properties of the data. `lanagra@usecon` and `lanagra@labor`
+# are the same BLS series, same 1052 observations from 1939, and differ ONLY on `group`
+# (E30 vs E40) and the minute they were refreshed. Treating either as evidence would
+# park a genuine mirror — the exact over-parking this section exists to stop.
+_CATALOG_ONLY = ("group", "decprecision", "datetimemod", "geography1", "geography2")
+
+_METADATA_CACHE: dict[str, Optional[dict]] = {}
+
+
+def _meta_value(v) -> str:
+    """Comparable, printable form of one DLX metadata cell (dates, Timestamps, ints)."""
+    return "" if v is None else str(v).strip()
+
+
+def haver_metadata(code_at_db: str) -> Optional[dict]:
+    """DLX's OWN metadata for `code@db` — 18 fields, ~200 ms measured, cached per process.
+
+    Distinct from `haver_search.get_meta`, which reads the Neon catalog mirror and
+    returns FOUR fields (descriptor, frequency, agg_type, sa_status). Those four are too
+    thin to separate two database mirrors, which is why an exact tie had no evidence to
+    break it. These come from DLX itself, so `enddate` is also the live one rather than
+    the catalog's stale copy.
+
+    Returns None when DLX cannot answer; every caller must treat that as "cannot judge"
+    and fall back to parking, never to a guess."""
+    key = (code_at_db or "").strip().lower()
+    if not key:
+        return None
+    if key in _METADATA_CACHE:
+        return _METADATA_CACHE[key]
+    out = None
+    try:
+        code, _, db = key.partition("@")
+        if code and db:
+            frame = _haver().metadata(code, db)
+            # Haver answers a failed metadata query with an ErrorReport DICT rather than
+            # raising, so a truthiness check alone would sail past it.
+            if not isinstance(frame, dict) and frame is not None and len(frame):
+                out = {c: frame[c].iloc[0] for c in frame.columns}
+    except Exception:
+        out = None
+    _METADATA_CACHE[key] = out
+    return out
+
+
+def metadata_summary(code_at_db: str) -> str:
+    """One line an economist can judge: source, span, observation count."""
+    m = haver_metadata(code_at_db)
+    if not m:
+        return f"{code_at_db} (DLX metadata unavailable)"
+    return (f"{code_at_db}: {_meta_value(m.get('shortsource')) or '?'}, "
+            f"{_meta_value(m.get('startdate'))} to {_meta_value(m.get('enddate'))}, "
+            f"{_meta_value(m.get('numobs'))} obs, {_meta_value(m.get('frequency'))}")
+
+
+def mirror_differences(codes: list[str]) -> Optional[dict]:
+    """{field: {code: value}} for every DATA-BEARING field on which `codes` disagree.
+
+    `{}` means they are true database mirrors of one series. `None` means DLX could not
+    be reached for at least one of them, so nothing was proved either way."""
+    metas = {c: haver_metadata(c) for c in codes}
+    if any(m is None for m in metas.values()):
+        return None
+    diffs: dict[str, dict] = {}
+    for field in _DATA_BEARING:
+        values = {c: _meta_value(m.get(field)) for c, m in metas.items()}
+        if len(set(values.values())) > 1:
+            diffs[field] = values
+    return diffs
+
+
+def break_exact_tie(exact: list[dict]) -> tuple[Optional[dict], str]:
+    """Separate two-or-more descriptor-exact candidates using DLX metadata (§15.2).
+
+    Returns `(pick, reason)`; `pick` is None when the slot must still park, and the
+    reason is written to be ANSWERABLE — the old message ("both scored 1.0, similarity
+    is not evidence") stated a fact the operator could not act on, when the evidence to
+    act on was one 200 ms call away."""
+    codes = [v["code"] for v in exact]
+    diffs = mirror_differences(codes)
+
+    if diffs is None:
+        return None, ("descriptor-exact on more than one candidate and DLX metadata was "
+                      "unavailable to separate them: " + ", ".join(codes))
+
+    if diffs:                                  # decision D2: any data difference parks
+        return None, (
+            f"{len(codes)} candidates match the descriptor exactly but DLX says they are "
+            f"different series (differ on {', '.join(sorted(diffs))}) — "
+            + "; ".join(metadata_summary(c) for c in codes))
+
+    # True mirrors. `usecon` holds only US series, so its PRESENCE in the tie is the
+    # evidence that the request is US-scoped; this can never reach for `usecon` on a
+    # non-US request, because it would not be a candidate.
+    in_usecon = [v for v in exact if v["code"].split("@")[-1].lower() == "usecon"]
+    if in_usecon:
+        # More than one usecon candidate is possible (two codes, one database); the
+        # fresher copy wins, which is the only thing `enddate` is allowed to decide.
+        pick = max(in_usecon, key=lambda v: _meta_value(
+            (haver_metadata(v["code"]) or {}).get("enddate")))
+        return pick, (f"identical on every data-bearing field in DLX, so a database "
+                      f"mirror of one series ({', '.join(codes)}); bound the usecon copy")
+
+    # Mirrors with no usecon among them. Do NOT invent an ordering between `labor` and
+    # `empl` — a preference nobody has reasoned about is not evidence.
+    return None, (
+        f"the same series mirrored across {', '.join(sorted(c.split('@')[-1] for c in codes))} "
+        f"with no usecon copy — identical on every data-bearing field, so pick a database: "
+        + ", ".join(codes))
+
+
 # ───────────────────────────── Stage-2 resolution ───────────────────────────
 def resolve_slot(slot: dict, *,
                  confirm: Callable[[str], bool],
@@ -850,8 +1030,19 @@ def resolve_slot(slot: dict, *,
 
     exact = [v for v in viable if v["exact"]]
     pick = None
+    tie_reason = ""
     if len(exact) == 1:
         pick = exact[0]
+    elif len(exact) > 1:
+        # Two exact matches used to reach no branch at all and park — served strictly
+        # worse than ZERO exact matches, which at least got the similarity fallback.
+        # `descriptor_exact` compares normalized token sets with the units parenthetical
+        # stripped, so Haver's database mirrors are indistinguishable BY CONSTRUCTION;
+        # the catalog cannot break this tie and was never going to. DLX can (§15.2).
+        pick, tie_reason = break_exact_tie(exact)
+        slot["tie_metadata"] = {v["code"]: {
+            k: _meta_value(val) for k, val in (haver_metadata(v["code"]) or {}).items()
+        } for v in exact}
     elif not exact:
         relevant = [v for v in viable if v["sim"] >= SIM_THRESHOLD]
         if len(relevant) == 1:
@@ -870,10 +1061,15 @@ def resolve_slot(slot: dict, *,
                     relevance_exact=pick["exact"], bound_via_query=pick["via_query"],
                     reason=("exact descriptor match" if pick["exact"]
                             else f"descriptor match sim={pick['sim']}")
-                    + f" via search {pick['via_query']!r}")
+                    + f" via search {pick['via_query']!r}"
+                    + (f"; {tie_reason}" if tie_reason else ""))
         _record_meta_of_record(slot, pick["code"], get_meta)
     else:
-        if not viable:
+        if tie_reason:
+            # The tie-break already looked at DLX and can say WHICH evidence separates
+            # the candidates. Anything more generic would throw that away.
+            why = tie_reason
+        elif not viable:
             why = "no confident/relevant match — human supplies code@db"
         elif not any(v["sim"] >= SIM_THRESHOLD or v["exact"] for v in viable):
             why = (f"{len(viable)} candidate(s) but none descriptor-relevant "
