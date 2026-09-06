@@ -140,16 +140,31 @@ so it is `chat_learned.local.json`. **On the host it runs behind Entra**, so the
 comes from the token's username and the file becomes `chat_learned.<username>.json`. A
 store built on the laptop is invisible to the server until it is renamed.
 
-`/health` will not tell you the name: it is unauthenticated, so it reports the `local`
-fallback. Ask an authenticated tool instead — from Claude Desktop against the remote
-connector, call `forget_binding` with a descriptor that does not exist:
+> **First: Claude Desktop caches the connector's tool list.** A release that ADDS tools —
+> §15 added `remember_binding` and `forget_binding` — will not show them to a client that
+> connected before the restart. The client states plainly that the tool does not exist,
+> and reasons confidently from the old tool set, so it reads as a server fault rather than
+> a stale client. Fully **quit and relaunch** Claude Desktop (closing the window is not
+> enough on Windows; quit from the tray), then start a **new chat** — an open conversation
+> keeps the list it began with. Toggle the connector off/on if that is not enough. Only
+> remove and re-add as a last resort, since that discards the Entra authorization.
+>
+> Confirm before going further by asking which tools the connector exposes. §15 has four:
+> `resolve_series`, `remember_binding`, `forget_binding`, `render_chart`.
+
+`/health` will not tell you the slug: it is unauthenticated, so it always reports the
+`local` fallback no matter who is signed in. Ask an authenticated tool instead — from
+Claude Desktop against the remote connector, call `forget_binding` with a descriptor that
+does not exist:
 
 ```
 forget_binding("zzz-not-a-real-descriptor")
 ```
 
-It removes nothing, and returns `operator` and `store` — the slug and the exact path the
-server reads. Then rename the file beside the other knowledge JSON:
+It removes nothing and returns `operator` and `store` — the slug and the exact path the
+server reads. **Measured 2026-09-06: `operator` is `asingh`**, so the file is
+`chat_learned.asingh.json`. Copy the laptop's store to that name, beside the other
+knowledge JSON:
 
 ```powershell
 cd C:\Users\madz\Work\asingh\haver-chart\knowledge
@@ -158,6 +173,12 @@ copy chat_learned.local.json chat_learned.<slug>.json
 
 Skipping this is not dangerous — the lane just re-asks parks it has already been told
 about — but it throws the answers away.
+
+One wart to know about: the `chat_learned.local.json` left behind is what `/health` keeps
+reporting, because that view is always the anonymous operator. Once the real store starts
+accumulating answers the two diverge, and `/health` will show a stale count that belongs
+to nobody. Delete the `local` copy once the ratchet check in §8 passes; the laptop's
+`knowledge_repo` still holds the original.
 
 ## 7. Restart the server — owner, at RDP
 
