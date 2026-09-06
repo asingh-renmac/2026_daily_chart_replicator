@@ -2754,17 +2754,24 @@ Measured over three runs of the same 18 slots:
 |---|---|---|---|
 | 1 | 2 | 16 | §15.1 + §15.2 only |
 | 2 | 7 | 11 | + D14, the SA default |
-| 3 | **13** | **5** | + six operator answers, remembered (§15.3) |
+| 3 | 13 | 5 | + six operator answers, remembered (§15.3) |
+| 4 | **18** | **0** | + the last five, found by searching Haver directly |
 
-72% bound on the second pass, and the ratchet holds across processes. The `Civilian
-Unemployment Rate` row also exercised D5's second half: it auto-bound `a0m043@bci`, the
-Conference Board copy, and the operator's `LR@USECON` correction now overrides it.
+**The whole commentary now resolves with no parks at all.** The `Civilian Unemployment
+Rate` row also exercised D5's second half: it auto-bound `a0m043@bci`, the Conference
+Board copy, and the operator's `LR@USECON` correction overrides it.
 
-The five that remain are the ones where the catalog genuinely does not surface the series
-— Fed Funds target MIDPOINT (the best hit is daily, and the target has been a range since
-2008), Aggregate Weekly Payrolls for production and nonsupervisory workers, the two
-one-month diffusion indexes, and Food Services employment (every candidate is a CEW
-ESTABLISHMENT count, not employment). These need a ticker, not a better threshold.
+The last five needed a ticker rather than a better threshold, and finding them took a
+DIFFERENT query than the resolver's own. Two are worth recording because they are traps:
+
+* **Fed funds target.** The `daily` copies cannot be plotted at all — `g4_lib.pull` maps
+  M/Q/W/A and raises `KeyError` on `D`. The monthly copies live in `usecon`, and
+  `ffedtar@usecon` was measured to BE the range midpoint (3.625 against 3.50–3.75), so no
+  upper/lower arithmetic is needed. Operator chose `ffedtare@usecon`, the end-of-period
+  copy.
+* **Diffusion indexes** are a family keyed by SPAN — `zdla` (1-month), `zd3la`, `zd6la`,
+  `zd12la`. The descriptor "One-Month Diffusion Index" names the span, not the frequency,
+  and picking the wrong member gives a smoother line that still looks right.
 
 **One bind worth a human look:** "Civilian Unemployment Rate" binds `a0m043@bci`, the
 Conference Board's copy, rather than the BLS series most readers would assume. It is a

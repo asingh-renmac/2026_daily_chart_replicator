@@ -87,6 +87,31 @@ second `--apply` is a no-op and re-running after a later pull is harmless. It wr
 If the count differs from 8, the host's store is not the one this was measured against.
 Stop and compare rather than applying.
 
+## 4b. Carry the chat memory across — the operator slug CHANGES
+
+`chat_store` names its file after the operator. On a laptop over stdio there is no token,
+so the file is `chat_learned.local.json`. **On the host it runs over HTTP behind Entra**,
+so the slug comes from the token's username and the file becomes
+`chat_learned.<username>.json`. A store built up on the laptop is therefore invisible to
+the server unless it is renamed.
+
+The server tells you the name it is looking for — that is what the `chat_memory` block in
+`/health` is for:
+
+```powershell
+curl https://chart.hvr-mcp.work/health     # read chat_memory.operator and chat_memory.path
+```
+
+Then copy the laptop's store to that name, next to the other knowledge JSON:
+
+```powershell
+copy chat_learned.local.json chat_learned.<username-from-health>.json
+```
+
+Do this AFTER the first restart, since the slug is not knowable until a signed-in request
+has been served. Skipping it is not dangerous — the lane simply re-asks parks it has
+already been told about — but it throws away the answers.
+
 ## 5. Restart the server
 
 Restarting is cheap: the lane keeps no state between calls beyond the parquet cache, and
