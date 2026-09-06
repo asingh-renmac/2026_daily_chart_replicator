@@ -25,6 +25,12 @@ new code.
 
 ---
 
+## 0. Get a shell on the host first
+
+`haver_chart/SSH_ACCESS.md`. Everything below assumes you can run commands on the host
+without an RDP session. That is set up once, through the tunnel that already serves
+`chart.hvr-mcp.work`, so no inbound port is opened.
+
 ## 1. Convert the host to a git checkout (one time only)
 
 The host currently holds an extracted teammate zip. Copying files by hand for every
