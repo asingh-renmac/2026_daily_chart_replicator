@@ -93,8 +93,9 @@ import errors and parser regressions before anyone books an RDP session.
 python haver_chart\selftest.py
 ```
 
-Expect **71/71**. This talks to DLX, so it also proves the host's DLX session is alive. A
-failure here is a reason to stop, not to restart the server and hope.
+Expect **77/77** — 71 before the six G20a checks in §11 were added. This talks to DLX, so
+it also proves the host's DLX session is alive. A failure here is a reason to stop, not to
+restart the server and hope.
 
 ## 5. Migrate the knowledge store — **do not run the migration script on the host**
 

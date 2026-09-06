@@ -469,6 +469,46 @@ else:
 check(lane.chart_path("no-such-chart-" + "0" * 32) is None,
       "an unknown id is a plain miss, not an error")
 
+print("\n11. Every rendered chart stays reachable in the reply (G20a)")
+# The inline image is collapsed into a closed tool panel by default, and Claude's
+# connector routinely forwards only ONE of `content` / `structured_content`. That leaves
+# the text block as the single carrier certain to reach the operator, so a link absent
+# from it is a chart nobody can open. The failure is silent in the worst way — the render
+# succeeded, the PNG exists, the reply just never mentions it — and it already happened
+# once while the GET route was serving 200s. Asserting it beats re-reading one reply.
+#
+# `_result_text` is pure, so none of this needs DLX or a live render.
+from haver_chart import server  # noqa: E402
+
+_url = "https://chart.hvr-mcp.work/chart/gdp-" + "0" * 32
+_summary = {"plotted": ["Real GDP", "Nominal GDP"], "end": "2026-06-30",
+            "chart_id": "gdp-" + "0" * 32, "chart_url": _url}
+_text = server._result_text(_summary, "chart_url")
+
+check(_text.splitlines()[0].startswith("chart_url: "),
+      "the link leads — first line, not buried under the payload",
+      _text.splitlines()[0][:48] + "…")
+
+check(_url in _text,
+      "the url appears verbatim, so it cannot be paraphrased into a 404")
+
+_missing = [k for k in _summary if f"{k}: " not in _text]
+check(not _missing,
+      "every structured field is mirrored into text",
+      ("missing: " + ", ".join(_missing)) if _missing else f"{len(_summary)} fields")
+
+check("not only the last" in _text,
+      "the instruction covers the MULTI-chart case",
+      "the observed failure was only the FINAL link getting printed")
+
+# stdio carries a local path instead of a url, and must behave identically.
+_stdio = server._result_text({"plotted": ["x"], "end": "2026", "path": r"C:\out\x.png"},
+                             "path")
+check(_stdio.splitlines()[0].startswith("path: "),
+      "stdio leads with `path`, for the same reason")
+check("chart_url" not in _stdio,
+      "stdio never advertises a url the operator has no way to open")
+
 n_bad = sum(1 for ok, _, _ in _RESULTS if not ok)
 print("\n" + "=" * 78)
 print(f"{len(_RESULTS) - n_bad}/{len(_RESULTS)} checks passed"

@@ -249,6 +249,37 @@ def forget_binding(base_descriptor: str) -> dict:
         raise ToolError(lane.explain(exc))
 
 
+def _result_text(summary: dict, link_key: str) -> str:
+    """Mirror a render summary into the text block, link first.
+
+    Image content alone is not enough. Claude's connector forwards `content` to the
+    model and often drops `structured_content`, at which point the model honestly says
+    it has no link — which is exactly what happened while the GET route was already
+    serving 200s. Mirroring the WHOLE summary into text is what the MCP spec recommends
+    anyway, so a client reading only one of the two fields loses nothing, and it also
+    defuses the inverse client bug where a present `structured_content` causes `content`
+    — images included — to be dropped.
+
+    The instruction rides in-band deliberately. A tool description is read once per
+    connection and a skill does nothing until someone installs it; this text arrives
+    with EVERY result, so it is the only guidance a client cannot skip. It has to exist
+    because the image is collapsed into a closed tool panel by default: a chart whose
+    link the model never printed is a chart the operator cannot reach.
+
+    Pure and separate from the tool so the G20a guarantee is testable without a live
+    render — otherwise the only thing standing behind "every chart is reachable" is a
+    manual look at one reply.
+    """
+    ordered = [link_key] + [k for k in summary if k != link_key]
+    lines = [f"{k}: {summary[k]}" for k in ordered]
+    lines.append(
+        f"ACTION REQUIRED — print the {link_key} above in your reply to the operator, "
+        f"one line per chart. The inline image is collapsed by default in this client, "
+        f"so an unprinted {link_key} is a chart they cannot reach. After rendering "
+        f"several charts, list every one, not only the last.")
+    return "\n".join(lines)
+
+
 @mcp.tool
 def render_chart(
     series: list[dict],
@@ -344,28 +375,8 @@ def render_chart(
                                 + f"/chart/{summary['chart_id']}")
     else:
         summary["path"] = out["path"]
-    # Image alone is not enough: Claude's connector forwards `content` to the model and
-    # often drops `structured_content`. The model then honestly says it has no link —
-    # which is what happened after the GET route was already serving 200s. Mirror the
-    # WHOLE summary into text, which is what the MCP spec recommends anyway so that a
-    # client reading only one of the two fields loses nothing. It also defuses the
-    # inverse client bug, where a present `structured_content` makes `content` — images
-    # included — get dropped.
-    #
-    # The instruction rides in-band deliberately. A tool description is read once per
-    # connection and a skill does nothing until someone installs it; this text arrives
-    # with EVERY result, so it is the only guidance that cannot be skipped. It has to
-    # exist because the client collapses the image into a closed tool panel: a chart
-    # whose link the model never printed is a chart the operator cannot see.
-    link_key = "chart_url" if HTTP_ENABLED else "path"
-    ordered = [link_key] + [k for k in summary if k != link_key]
-    lines = [f"{k}: {summary[k]}" for k in ordered]
-    lines.append(
-        f"ACTION REQUIRED — print the {link_key} above in your reply to the operator, "
-        f"one line per chart. The inline image is collapsed by default in this client, "
-        f"so an unprinted {link_key} is a chart they cannot reach. After rendering "
-        f"several charts, list every one, not only the last.")
-    note = TextContent(type="text", text="\n".join(lines))
+    note = TextContent(type="text",
+                       text=_result_text(summary, "chart_url" if HTTP_ENABLED else "path"))
     return ToolResult(
         content=[Image(path=out["path"]).to_image_content(), note],
         structured_content=summary,
