@@ -3,72 +3,91 @@
 For pushing a code change to a host that is already serving `chart.hvr-mcp.work`.
 First-time setup is `SERVER_SETUP.md`; this is the *update* path.
 
-Written for the §15 rollout, but the shape is general.
+Written for the §15 rollout, which was carried out on 2026-09-06 and is recorded here as
+worked rather than as planned — several of the obvious instructions do not survive
+contact with this host.
 
 ---
 
-## The step that is easy to miss
+## What a remote shell can and cannot do
 
-**The host has its own copy of the knowledge JSON**, not the `P:` share — see
-`HANDOFF.md` §4C. So a code change that alters how a store is KEYED needs the store
-migrated on that host too. Deploying the code alone leaves the two out of step, and the
-symptom is silent: labels do not error, they just stop being found, and charts fall back
-to generated legends that look plausible.
+Shell access is `SSH_ACCESS.md`, through the tunnel that already serves
+`chart.hvr-mcp.work`. It runs as a **local** account (`mcpdeploy`), and that boundary
+decides how the work splits:
 
-§15.1a is exactly this shape. `transform_key` now derives from the slot's formula, so
-eight legend entries must be re-filed. That was done on the development machine on
-2026-09-04; **the host's copy has not been touched.** Step 4 below is not optional.
+| | over SSH | needs the owner at RDP |
+|---|---|---|
+| `git pull`, file inspection | yes | |
+| knowledge-store edits | yes | |
+| transform/chat-store checks (`avd_smoke.py`) | yes | |
+| `selftest.py` | | **yes** — talks to DLX |
+| restarting the servers | | **yes** — they live in the owner's session |
 
-Order matters: **code first, then the migration.** `scripts/migrate_legend_keys.py`
-reconstructs each old key using the *current* phrase mapper, so it must run against the
-new code.
+The deploy account **cannot reach DLX**, and this is not a fixable oversight:
+
+- Haver's path auto-detection reads *per-user* DLX configuration, which lives in the
+  owner's profile. It reports `(path:auto) Automatic detection of the database path
+  failed`.
+- The data share is a domain resource and a local account has no credential for it.
+- The failure is a **hang, not an error**. An un-credentialed DLX path raises a GUI login
+  modal (see the G10b finding), and nothing in an SSH session can dismiss it. A probe sat
+  for 180 seconds and left a stray process.
+
+Giving the deploy account DLX access would mean a second DLX identity, which is a hard
+stop pending written confirmation from Haver. Do not go around it.
+
+> **Never kill Python by name on this host.** Six `python.exe` processes belong to the
+> owner and three of them are the live servers. `scripts/avd_ps_list.ps1` lists PIDs with
+> their owners; kill by PID only.
 
 ---
 
-## 0. Get a shell on the host first
+## 1. The host is a git checkout (done 2026-09-06)
 
-`haver_chart/SSH_ACCESS.md`. Everything below assumes you can run commands on the host
-without an RDP session. That is set up once, through the tunnel that already serves
-`chart.hvr-mcp.work`, so no inbound port is opened.
+It previously held an extracted teammate zip. It is now a checkout of `main`, with the
+pre-existing files preserved on a `host-pre-deploy` branch (`c3c2153`) in case anything
+was ever needed back. The layout is unchanged: `repo/` is the working tree and the
+`vendor/` sibling `bootstrap._adopt_vendored_paths` looks for stays where it is.
 
-## 1. Convert the host to a git checkout (one time only)
+Two things about git on this host, both non-obvious:
 
-The host currently holds an extracted teammate zip. Copying files by hand for every
-change is how a host silently ends up on a mix of two versions, so make it a checkout
-once and then `git pull` forever after.
+**`origin` must be an HTTPS URL.** GitHub over SSH does not work here — port 22 *and*
+`ssh.github.com:443` both accept the TCP connection and then never complete the
+handshake, which is what a middlebox that permits the connection but not the protocol
+looks like. Deploy keys are an SSH-only mechanism, so they are not an option; do not
+spend time generating one.
 
-This keeps the existing layout: `repo/` becomes the working tree, and the `vendor/`
-sibling that `bootstrap._adopt_vendored_paths` looks for stays exactly where it is.
-
-```powershell
-cd C:\Users\madz\Work\asingh\haver-chart\repo
-git init
-git remote add origin <the repo URL you can authenticate to from this host>
-git fetch origin main
-git reset --hard origin/main
-```
-
-`git reset --hard` rewrites **tracked** files only. `config\.env`, the knowledge JSON and
-anything else gitignored or untracked are left alone — which is what makes this safe, and
-also what makes it worth confirming before you run it:
-
-```powershell
-git status --short          # anything listed as ?? is untracked and will survive
-```
-
-**Authentication.** The dev machine uses an SSH alias (`git@github-work:...`) that will
-not exist on the host. Either copy an SSH key and matching `~/.ssh/config` entry, or use
-an HTTPS URL with a personal access token. If neither is available, skip to the fallback
-at the bottom.
+**`safe.directory` must come from the environment.** The checkout belongs to the owner
+while deploys run as `mcpdeploy`, so git rejects it as "dubious ownership". The catch is
+that `git config --global --add safe.directory ...` is *accepted and then ignored*: a
+non-interactive `powershell -File` session resolves `HOME` somewhere that file is not.
+Use `GIT_CONFIG_COUNT` / `GIT_CONFIG_KEY_0` / `GIT_CONFIG_VALUE_0`, which bind to the
+process. `scripts/avd_deploy.ps1` already does this.
 
 ## 2. Every later update
 
 ```powershell
-cd C:\Users\madz\Work\asingh\haver-chart\repo
-git pull --ff-only origin main
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\avd_deploy.ps1          # preview
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\avd_deploy.ps1 -Apply   # install
 ```
 
-## 3. Check the code before restarting anything
+Preview prints how far behind the host is and which files change. `-Apply` fast-forwards,
+snapshots first if anyone edited the host directly, and finishes with the smoke test.
+
+A `git pull --ff-only origin main` by hand does the same thing, given the environment
+above.
+
+## 3. Check what can be checked remotely
+
+```powershell
+python scripts\avd_smoke.py
+```
+
+Runs every `fixtures/transform_phrases.json` case through the phrase parser and loads the
+chat store. Expect **55 passed, 0 failed**. No DLX, so this runs over SSH — it catches
+import errors and parser regressions before anyone books an RDP session.
+
+## 4. Check what cannot — as the owner, at RDP
 
 ```powershell
 python haver_chart\selftest.py
@@ -77,48 +96,70 @@ python haver_chart\selftest.py
 Expect **71/71**. This talks to DLX, so it also proves the host's DLX session is alive. A
 failure here is a reason to stop, not to restart the server and hope.
 
-## 4. Migrate the knowledge store — only when a release says to
+## 5. Migrate the knowledge store — **do not run the migration script on the host**
 
-For §15:
+The host keeps its own copy of the knowledge JSON, not the `P:` share (`HANDOFF.md` §4C),
+so a change to how a store is KEYED has to reach that copy too. Deploying code alone
+leaves the two out of step, and the symptom is silent: labels do not error, they simply
+stop being found and charts fall back to generated legends that look plausible.
 
-```powershell
-python scripts\migrate_legend_keys.py            # dry run; read the plan it prints
-python scripts\migrate_legend_keys.py --apply    # writes, after a timestamped backup
-```
+**But `scripts/migrate_legend_keys.py` cannot do that job here.** Two independent
+reasons, either one sufficient:
 
-Expect **8 entries re-filed (7 moved, 1 copied)**, store 79 → 80. It is idempotent, so a
-second `--apply` is a no-op and re-running after a later pull is harmless. It writes a
-`legend_labels.<timestamp>.bak.json` beside the store before touching anything.
+1. It derives its old→new mapping by replaying `data/ledger_*.csv`, and **the host has no
+   ledger files**. It would map nothing, re-file nothing, and report success.
+2. It reconstructs each old key by calling *today's* `phrase_to_haver`. Once §15.1b has
+   been deployed that mapper has changed, so the reconstruction is no longer faithful —
+   it computes old keys that were never used.
 
-If the count differs from 8, the host's store is not the one this was measured against.
-Stop and compare rather than applying.
-
-## 4b. Carry the chat memory across — the operator slug CHANGES
-
-`chat_store` names its file after the operator. On a laptop over stdio there is no token,
-so the file is `chat_learned.local.json`. **On the host it runs over HTTP behind Entra**,
-so the slug comes from the token's username and the file becomes
-`chat_learned.<username>.json`. A store built up on the laptop is therefore invisible to
-the server unless it is renamed.
-
-The server tells you the name it is looking for — that is what the `chat_memory` block in
-`/health` is for:
+The mapping can only be derived faithfully **on the machine that owns the ledger, before
+the phrase mapper changes**. So derive it there and install the result:
 
 ```powershell
-curl https://chart.hvr-mcp.work/health     # read chat_memory.operator and chat_memory.path
+# from the ledger-owning machine, after its own --apply
+scp <local>/clarified-knowledge/legend_labels.json avd:C:/Users/mcpdeploy/legend_labels.new.json
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\avd_store_sync.ps1
 ```
 
-Then copy the laptop's store to that name, next to the other knowledge JSON:
+`avd_store_sync.ps1` backs up the host's file, installs the migrated one and verifies the
+result. **Justify the swap before running it** — the two stores must be the same store,
+differing only by the migration:
+
+- the other three JSON files byte-identical, and
+- every differing legend key carrying an *identical* label, `source_descriptor` and
+  `added` timestamp, so only the key name moves.
+
+For §15 that held exactly: 7 keys re-filed plus 1 copy, 79 → 80 entries, 72 shared keys
+with zero label differences and no label text lost anywhere. If it does not hold, the
+host's store is not the one the migration was measured against — stop and compare.
+
+## 6. Carry the chat memory across — the operator slug CHANGES
+
+`chat_store` names its file after the operator. Over stdio on a laptop there is no token,
+so it is `chat_learned.local.json`. **On the host it runs behind Entra**, so the slug
+comes from the token's username and the file becomes `chat_learned.<username>.json`. A
+store built on the laptop is invisible to the server until it is renamed.
+
+`/health` will not tell you the name: it is unauthenticated, so it reports the `local`
+fallback. Ask an authenticated tool instead — from Claude Desktop against the remote
+connector, call `forget_binding` with a descriptor that does not exist:
+
+```
+forget_binding("zzz-not-a-real-descriptor")
+```
+
+It removes nothing, and returns `operator` and `store` — the slug and the exact path the
+server reads. Then rename the file beside the other knowledge JSON:
 
 ```powershell
-copy chat_learned.local.json chat_learned.<username-from-health>.json
+cd C:\Users\madz\Work\asingh\haver-chart\knowledge
+copy chat_learned.local.json chat_learned.<slug>.json
 ```
 
-Do this AFTER the first restart, since the slug is not knowable until a signed-in request
-has been served. Skipping it is not dangerous — the lane simply re-asks parks it has
-already been told about — but it throws away the answers.
+Skipping this is not dangerous — the lane just re-asks parks it has already been told
+about — but it throws the answers away.
 
-## 5. Restart the server
+## 7. Restart the server — owner, at RDP
 
 Restarting is cheap: the lane keeps no state between calls beyond the parquet cache, and
 the JWT signing key is fixed in `.env`, so sessions survive (`SERVER_SETUP.md` §233).
@@ -126,14 +167,14 @@ the JWT signing key is fixed in `.env`, so sessions survive (`SERVER_SETUP.md` �
 Stop the running `server.py`, start it again the same way, and leave `cloudflared` alone
 unless it also died — a second tunnel for `chart.hvr-mcp.work` must never be created.
 
-## 6. Verify from outside
+## 8. Verify from outside
 
 ```powershell
 curl https://chart.hvr-mcp.work/health
 ```
 
-For the §15 rollout the response must now include a **`chat_memory`** block. Its absence
-means the old process is still serving and the restart did not take.
+The response must now include a **`chat_memory`** block. Its absence means the old process
+is still serving and the restart did not take.
 
 Then, from Claude Desktop against the remote connector:
 
@@ -141,16 +182,15 @@ Then, from Claude Desktop against the remote connector:
   monthly change"*. Before §15 this silently plotted a 3-month average of the LEVEL. It
   must now produce `movv(diff(X,1),3)`.
 - Resolve one parked slot, then start a **new chat** and ask for the same series. It must
-  bind without asking. That is the §15.3 ratchet, and it is the only check that proves
-  the store is writable at the path the server actually uses.
+  bind without asking. That is the §15.3 ratchet, and the only check that proves the store
+  is writable at the path the server actually uses.
 
 ---
 
 ## Fallback: copy the files
 
 If git cannot authenticate from the host, copy these into the same relative paths and do
-steps 3 through 6 unchanged. The list is every tracked file §15 touched that the server
-loads at runtime:
+steps 3 through 8 unchanged:
 
 ```
 src\resolve.py
@@ -159,9 +199,9 @@ haver_chart\lane.py
 haver_chart\server.py
 haver_chart\chat_store.py        (new file)
 haver_chart\selftest.py
-scripts\migrate_legend_keys.py   (needed for step 4)
-fixtures\transform_phrases.json  (needed by selftest)
+scripts\avd_smoke.py             (step 3)
+fixtures\transform_phrases.json  (needed by both)
 ```
 
-This is a fallback, not the plan. Every hand copy is a chance to leave the host on a
-half-version, and `chat_store.py` being new is exactly the file a copy loop skips.
+A fallback, not the plan. Every hand copy is a chance to leave the host on a half-version,
+and `chat_store.py` being new is exactly the file a copy loop skips.
