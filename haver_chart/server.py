@@ -405,7 +405,8 @@ def render_chart(
 # the iframe. The script below reports any message it receives, so we learn that too when
 # it happens, but the gate itself is the narrower question of whether anything renders.
 if HTTP_ENABLED:
-    from fastmcp.apps import AppConfig                # noqa: E402
+    from fastmcp import Context                       # noqa: E402
+    from fastmcp.apps import AppConfig, UI_EXTENSION_ID   # noqa: E402
 
     _PROBE_URI = "ui://haver-chart/g20b-probe.html"
     _PROBE_HTML = """<!doctype html>
@@ -433,19 +434,82 @@ if HTTP_ENABLED:
 </body></html>
 """
 
+    # A failed render looks the same from the chat window no matter WHERE it broke, and the
+    # first attempt produced two contradictory signals at once: the tool row said "Unable to
+    # reach haver-chart" while a toast said the CONTENT failed to display. Those are
+    # different faults with different fixes, and the client reports neither precisely.
+    #
+    # Recording both halves server-side splits it into three states that cannot be confused:
+    #
+    #   no events        -> the call never arrived. Client-side or broker, not this server.
+    #   tool only        -> the result came back but the client never FETCHED the html, so
+    #                       it did not act on the app metadata (wrong spec draft, most
+    #                       likely — Claude may expect a different `_meta` key than the
+    #                       `io.modelcontextprotocol/ui` extension FastMCP emits).
+    #   tool + resource  -> the html was delivered and the RENDERER rejected it. That is a
+    #                       CSP or sandbox question, and a fixable one.
+    #
+    # In memory on purpose: it must not outlive the process, since a stale file would answer
+    # for a run that already ended. Bounded so a forgotten probe cannot grow without limit.
+    from datetime import datetime, timezone           # noqa: E402
+
+    _G20B_TRACE: list[dict] = []
+
+    def _trace(event: str, **extra) -> None:
+        _G20B_TRACE.append({"at": datetime.now(timezone.utc).isoformat(),
+                            "event": event, **extra})
+        del _G20B_TRACE[:-50]
+
+    @mcp.custom_route("/g20b", methods=["GET"])
+    async def g20b_trace(request):
+        """Read the probe trace WITHOUT an RDP session (temporary, with the probe).
+
+        Unauthenticated like `/health`, and safe to be: it carries event names and
+        timestamps, no data, no identity and no store contents. The alternative is reading
+        a log off a screen someone has to be sitting in front of, which is how a two-minute
+        measurement turns into a scheduling problem.
+        """
+        from starlette.responses import JSONResponse
+        return JSONResponse({"probe_uri": _PROBE_URI, "events": _G20B_TRACE,
+                             "read_html": any(e["event"] == "resource_read"
+                                              for e in _G20B_TRACE),
+                             "called_tool": any(e["event"].startswith("tool_")
+                                                for e in _G20B_TRACE)})
+
     @mcp.resource(_PROBE_URI, app=True)
     def _g20b_probe_ui() -> str:
         """Static UI resource for the G20b transport probe."""
+        _trace("resource_read")
         return _PROBE_HTML
 
     @mcp.tool(app=AppConfig(resource_uri=_PROBE_URI, visibility=["app", "model"]))
-    def ui_probe() -> dict:
+    def ui_probe(ctx: Context) -> dict:
         """TEMPORARY diagnostic (G20b). Ask for it by name to test the widget transport.
 
         Renders a small panel if MCP Apps work over this connector. Touches no data, no
         DLX and no store. It will be removed once the question is settled.
         """
-        return {"probe": "g20b", "rendered_by": "haver-chart",
+        # MCP Apps is a NEGOTIATED extension: the server offers it during initialize and
+        # the client is meant to advertise it back. If the client never claimed support,
+        # a missing panel is not a bug at all — it is the documented outcome, and no amount
+        # of adjusting CSP or markup on this side will change it. That single boolean is
+        # the difference between "fix the resource" and "abandon §16", so it is worth more
+        # than everything else in this trace.
+        info: dict = {}
+        try:
+            info["client_supports_ui_extension"] = ctx.client_supports_extension(
+                UI_EXTENSION_ID)
+        except Exception as exc:                       # never let a probe break a probe
+            info["client_supports_ui_extension"] = f"unknown: {type(exc).__name__}"
+        try:
+            params = ctx.request_context.session.client_params
+            info["client"] = f"{params.clientInfo.name} {params.clientInfo.version}"
+            info["client_capabilities"] = params.capabilities.model_dump(
+                exclude_none=True, mode="json")
+        except Exception as exc:
+            info["client"] = f"unknown: {type(exc).__name__}"
+        _trace("tool_ui_probe", **info)
+        return {"probe": "g20b", "rendered_by": "haver-chart", **info,
                 "note": "If you can see a green PASS panel, MCP Apps work here."}
 
     @mcp.tool
@@ -465,6 +529,7 @@ if HTTP_ENABLED:
 
         Guessing between those costs a restart each time; this costs one.
         """
+        _trace("tool_ui_probe_plain")
         return {"probe": "g20b-control", "has_ui": False,
                 "note": "Plain tool, no MCP Apps metadata. Seeing this one but not "
                         "ui_probe means the client rejects UI-bearing tools."}
