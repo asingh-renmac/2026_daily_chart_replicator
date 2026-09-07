@@ -2824,6 +2824,31 @@ the operator is waiting, on the system whose failure mode is a hang.
 
 **v1 is the table and a Submit button. Nothing else.**
 
+**BUILT 2026-09-06, pending a client check.** A separate `pick_series` tool rather than a
+panel on `resolve_series`, and that follows from how the extension works: a UI attaches to
+a TOOL, so whichever tool carries it renders a panel on EVERY call. On `resolve_series`
+that is one panel per series — six charts, six panels, five with nothing to choose. A
+separate tool means an auto-resolved series shows no panel at all, which is what was
+asked for.
+
+The risk that buys is the model forgetting to call it. G20a already answered that: an
+`ACTION REQUIRED` line in the tool's own text arrives with every result and cannot be
+skipped, which is what made chart links reliable.
+
+Columns are DLX metadata, not resolver scores. Similarity and exact-token match are the
+reasons the RESOLVER could not decide; showing them to an operator forwards the confusion
+rather than settling it. Source, start, **live** end date, observation count and frequency
+are what settle it by eye — and the live end date is the column that exposes a
+discontinued series, which the catalog's stale copy hides.
+
+Submit calls `remember_binding` from inside the view (`tools/call`, permitted by the host's
+`serverTools` capability), then hands back to the conversation with `ui/message`. Recording
+the bind from the view rather than asking the model to do it afterwards means the answer
+cannot be lost to a model that forgets to follow up.
+
+Locked by selftest §13 (ten checks). Every one of the four §16.3 rules fails SILENTLY, so
+a test is the only thing stopping five rounds of measurement from being paid for twice.
+
 ### §16.1 What the library already provides — measured 2026-09-06
 
 | Finding | Consequence |

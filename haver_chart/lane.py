@@ -197,7 +197,7 @@ def _candidates(slot: dict, n: int = 3) -> list[dict]:
 
 def resolve_one(base_descriptor: str, applied_transform: str = "", formula: str = "",
                 sa_hint: str = "", freq_hint: str = "", axis: str = "shared",
-                lag: str = "", plot_kind: str = "line") -> dict:
+                lag: str = "", plot_kind: str = "line", candidate_n: int = 3) -> dict:
     """Resolve ONE series through the daily lane's resolver. A park is a normal return."""
     kind = _plot_kind(plot_kind, "resolve_series")
     spec = {"description": base_descriptor, "base_descriptor": base_descriptor,
@@ -231,7 +231,7 @@ def resolve_one(base_descriptor: str, applied_transform: str = "", formula: str 
         "via": slot.get("bound_via_query") or "",
         "similarity": slot.get("relevance"),
         "exact_token_match": bool(slot.get("relevance_exact")),
-        "candidates": _candidates(slot),
+        "candidates": _candidates(slot, candidate_n),
         "reason": reason,
         "needs_clarification": bool(slot.get("needs_clarification")),
         "freq_resolved": slot.get("freq_resolved") or "",
@@ -249,6 +249,59 @@ def resolve_one(base_descriptor: str, applied_transform: str = "", formula: str 
                  "lag": slot.get("lag") or None,
                  "plot_kind": kind},
     }
+
+
+def pick_series(base_descriptor: str, applied_transform: str = "", formula: str = "",
+                sa_hint: str = "", freq_hint: str = "", candidate_n: int = 5) -> dict:
+    """Candidates for ONE parked slot, enriched from DLX, for the picker panel (§16).
+
+    Separate from `resolve_series` on purpose, and the separation IS the design. A UI
+    attaches to a TOOL, so whichever tool carries the panel renders one on every call —
+    put it on `resolve_series` and six charts produce six panels, five of which have
+    nothing to choose. This tool exists only where a choice exists.
+
+    Adds what `_candidates` cannot: `_candidates` reports similarity and exact-token
+    match, which are reasons the RESOLVER could not decide, and re-showing them to an
+    operator just forwards the confusion. What settles it by eye is the data — who
+    publishes it, when it starts, whether it still updates, how many observations. Those
+    come from `haver_metadata`, so `end` is the LIVE end date rather than the catalog's
+    stale copy, which is the column that exposes a discontinued series.
+
+    Costs one metadata call per candidate (~200 ms, cached per process). Bounded by
+    `candidate_n` because this runs while the operator waits, on the system whose
+    characteristic failure is a hang.
+
+    Read-only. Nothing here writes to a store; `remember_binding` does that, after the
+    operator has actually chosen.
+    """
+    out = resolve_one(base_descriptor, applied_transform, formula, sa_hint, freq_hint,
+                      candidate_n=candidate_n)
+    rows = []
+    for cand in out.get("candidates") or []:
+        code = cand.get("code") or ""
+        with quiet_stdout():
+            meta = R.haver_metadata(code) or {}
+        rows.append({
+            "code": code,
+            # DLX's descriptor when we have it: it carries the units parenthetical that
+            # says SA or NSA, which the catalog's copy can lack.
+            "descriptor": str(meta.get("descriptor") or cand.get("descriptor") or ""),
+            "database": code.split("@")[-1] if "@" in code else "",
+            "source": str(meta.get("shortsource") or ""),
+            "start": str(meta.get("startdate") or ""),
+            "end": str(meta.get("enddate") or ""),
+            "obs": str(meta.get("numobs") or ""),
+            "frequency": str(meta.get("frequency") or ""),
+            "exact": bool(cand.get("exact_token_match")),
+            "similarity": cand.get("similarity"),
+        })
+    return {"description": base_descriptor,
+            "status": out.get("status"),
+            "resolved": out.get("resolved"),
+            "reason": out.get("reason") or "",
+            "applied_transform": applied_transform,
+            "formula": formula,
+            "candidates": rows}
 
 
 # ──────────────────────────────── rendering ─────────────────────────────────

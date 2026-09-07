@@ -571,6 +571,94 @@ check(_R._loose_key("zs(nfib: net percent raising worker compensation)")
 check("(" in _R._loose_key("zs(yryr%(GDPH))"),
       "a formula keeps its parentheses — it is already canonical")
 
+def _import_http_server():
+    """Load `server.py` a SECOND time with HTTP forced on, so the picker exists.
+
+    Section 11 imported the module in stdio mode, where the UI half is deliberately not
+    registered — teammate zips should not carry tools that need a UI host. Re-importing
+    under a different module name with dummy credentials is what lets the picker's wiring
+    be asserted without a live Entra app or a running server.
+
+    Returns None with the reason on failure rather than raising, so one awkward
+    environment cannot take the other 86 checks down with it.
+    """
+    import asyncio
+    import importlib.util
+    import os
+    from pathlib import Path
+
+    env = {"HAVER_CHART_HTTP": "1",
+           "HAVER_CHART_AZURE_CLIENT_ID": "selftest",
+           "HAVER_CHART_AZURE_TENANT_ID": "selftest",
+           "HAVER_CHART_AZURE_CLIENT_SECRET": "selftest",
+           "HAVER_CHART_PUBLIC_URL": "https://selftest.invalid",
+           "HAVER_CHART_JWT_SIGNING_KEY": "s" * 32}
+    saved = {k: os.environ.get(k) for k in env}
+    os.environ.update(env)
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "haver_chart._server_http_selftest", Path(server.__file__))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        tools = {t.name: t for t in asyncio.run(mod.mcp.list_tools())}
+        resources = {str(r.uri): r for r in asyncio.run(mod.mcp.list_resources())}
+    except Exception as exc:                           # pragma: no cover - env dependent
+        print(f"    (http server import failed: {type(exc).__name__}: {exc})")
+        return None
+    finally:
+        for key, was in saved.items():
+            if was is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = was
+    return {"tools": tools, "resources": resources,
+            "PICKER_URI": mod._PICKER_URI, "PICKER_HTML": mod._PICKER_HTML}
+
+
+print("\n13. The picker obeys the four MCP Apps rules (§16.3)")
+# Every one of these failed SILENTLY during G20b: the host reported success, or blamed a
+# layer that was working. None of them is visible in a screenshot, so a test is the only
+# thing that keeps five rounds of measurement from being paid for twice.
+_srv = _import_http_server()
+if _srv is None:
+    check(True, "skipped — server module needs HTTP env vars to expose the picker",
+          "set HAVER_CHART_HTTP with dummy Azure values to run these locally")
+else:
+    _pick_tool = _srv["tools"]["pick_series"]
+    _pick_meta = _pick_tool.meta or {}
+    _pick_res = _srv["resources"][_srv["PICKER_URI"]]
+    _html = _srv["PICKER_HTML"]
+
+    # Rule 2 — without the deprecated flat key, the host never issues resources/read.
+    check(_pick_meta.get("ui/resourceUri") == _srv["PICKER_URI"],
+          "the tool carries the DEPRECATED FLAT _meta pointer",
+          "pre-GA hosts read only this one; without it the html is never fetched")
+    check((_pick_meta.get("ui") or {}).get("resourceUri") == _srv["PICKER_URI"],
+          "the tool also carries the current nested _meta pointer")
+
+    # Rule 3 — a boolean here fails on PREFETCH, before any tool is called.
+    check(isinstance((_pick_res.meta or {}).get("ui"), dict),
+          "the resource's _meta.ui is an OBJECT, not `true`",
+          "app=True emits a boolean and the host raises while prefetching")
+    check(str(_pick_res.mime_type).startswith("text/html;profile=mcp-app"),
+          "the resource is served as an mcp-app document")
+
+    # Rules 3 and 4 — the handshake, and the height report without which the frame is
+    # mounted at zero pixels while the host cheerfully reports a rendered widget.
+    for _needed in ("ui/initialize", "ui/notifications/initialized",
+                    "ui/notifications/size-changed"):
+        check(_needed in _html, f"the view speaks {_needed}")
+
+    # The submit path: record the bind from the view, then hand back to the model.
+    check("tools/call" in _html and "remember_binding" in _html,
+          "Submit calls remember_binding from the view itself",
+          "so a bind cannot be lost to a model that forgets to follow up")
+    check("ui/message" in _html,
+          "the view reports the choice back into the conversation")
+    check("innerHTML" not in _html,
+          "candidate text is never written as markup",
+          "rows carry DLX descriptors this server did not author")
+
 n_bad = sum(1 for ok, _, _ in _RESULTS if not ok)
 print("\n" + "=" * 78)
 print(f"{len(_RESULTS) - n_bad}/{len(_RESULTS)} checks passed"

@@ -637,6 +637,251 @@ if HTTP_ENABLED:
                         "ui_probe means the client rejects UI-bearing tools."}
 
 
+# ---------------------------------------------------------------------------
+# §16 — the parked-slot picker.
+#
+# HTTP only, matching the probes: a UI host is what makes this worth anything, and the
+# stdio teammate zips would only gain a tool they cannot display.
+#
+# The four rules G20b paid for, all of them load-bearing here (plan.md §16.3):
+#   1. `app=AppConfig(...)`, never `app=True` — a resource's `_meta.ui` must be an OBJECT
+#   2. emit the deprecated flat `_meta["ui/resourceUri"]` beside the nested one
+#   3. the view MUST run the `ui/initialize` handshake
+#   4. the view MUST report its own height, or the frame stays at zero
+if HTTP_ENABLED:
+    from fastmcp import Context                       # noqa: E402,F811
+    from fastmcp.apps import AppConfig                # noqa: E402,F811
+
+    _PICKER_URI = "ui://haver-chart/pick-series.html"
+
+    # Data is written with textContent and createElement, never innerHTML. The rows carry
+    # DLX descriptors — text this server did not author — and a picker that pasted them as
+    # markup would be an injection path into the operator's own panel.
+    _PICKER_HTML = """<!doctype html>
+<html><head><meta charset="utf-8"><title>pick a series</title>
+<style>
+ body{font:13px system-ui,sans-serif;margin:0;padding:14px;background:#0f172a;color:#e2e8f0}
+ h1{font-size:15px;margin:0 0 2px}
+ .sub{color:#94a3b8;margin-bottom:10px}
+ table{border-collapse:collapse;width:100%}
+ th{text-align:left;font-size:11px;text-transform:uppercase;color:#94a3b8;
+    border-bottom:1px solid #334155;padding:5px 6px}
+ td{padding:5px 6px;border-bottom:1px solid #1e293b;vertical-align:top}
+ tr.pick{cursor:pointer}
+ tr.pick:hover{background:#1e293b}
+ .code{font-family:ui-monospace,Consolas,monospace;color:#7dd3fc;white-space:nowrap}
+ .tag{font-size:10px;background:#166534;color:#dcfce7;padding:1px 5px;border-radius:8px}
+ .man{margin-top:12px}
+ input[type=text]{background:#1e293b;border:1px solid #334155;color:#e2e8f0;
+                  padding:6px;border-radius:5px;width:230px;font-family:ui-monospace,monospace}
+ button{margin-top:12px;background:#2563eb;color:#fff;border:0;padding:8px 16px;
+        border-radius:6px;font-size:13px;cursor:pointer}
+ button[disabled]{background:#334155;color:#94a3b8;cursor:default}
+ .msg{margin-top:10px;padding:8px;border-radius:6px;background:#1e293b;white-space:pre-wrap}
+ .err{background:#7f1d1d;color:#fee2e2}
+ .ok{background:#14532d;color:#dcfce7}
+</style></head>
+<body>
+ <h1 id="title">Pick a series</h1>
+ <div class="sub" id="why">Waiting for candidates...</div>
+ <table><thead><tr>
+   <th></th><th>Ticker</th><th>Description</th><th>Source</th>
+   <th>Start</th><th>Live end</th><th>Obs</th><th>Freq</th>
+ </tr></thead><tbody id="rows"></tbody></table>
+ <div class="man">None of these &mdash; enter a ticker:
+   <input type="text" id="manual" placeholder="CODE@DATABASE"></div>
+ <button id="go" disabled>Save binding</button>
+ <div id="msg"></div>
+<script>
+(function () {
+  var nextId = 2, pending = {}, data = null, chosen = null, done = false;
+
+  function send(m) { window.parent.postMessage(m, "*"); }
+  function report() {
+    send({jsonrpc: "2.0", method: "ui/notifications/size-changed",
+          params: {width: document.documentElement.scrollWidth,
+                   height: document.documentElement.scrollHeight}});
+  }
+  function request(method, params) {
+    var id = nextId++;
+    send({jsonrpc: "2.0", id: id, method: method, params: params});
+    return new Promise(function (resolve, reject) { pending[id] = {ok: resolve, no: reject}; });
+  }
+  function note(text, cls) {
+    var box = document.getElementById("msg");
+    box.textContent = text;
+    box.className = cls ? "msg " + cls : "msg";
+    report();
+  }
+  function cell(row, text, cls) {
+    var td = document.createElement("td");
+    if (cls) { td.className = cls; }
+    td.textContent = text == null ? "" : String(text);
+    row.appendChild(td);
+    return td;
+  }
+
+  function draw() {
+    var list = (data && data.candidates) || [];
+    document.getElementById("title").textContent = "Pick a series for: " + (data.description || "");
+    document.getElementById("why").textContent = data.reason || "";
+    var body = document.getElementById("rows");
+    body.textContent = "";
+    list.forEach(function (c, i) {
+      var tr = document.createElement("tr");
+      tr.className = "pick";
+      var pick = document.createElement("td");
+      var radio = document.createElement("input");
+      radio.type = "radio"; radio.name = "cand"; radio.value = c.code;
+      pick.appendChild(radio);
+      tr.appendChild(pick);
+      var codeCell = cell(tr, c.code, "code");
+      if (c.exact) {
+        var tag = document.createElement("span");
+        tag.className = "tag"; tag.textContent = "exact";
+        codeCell.appendChild(document.createTextNode(" "));
+        codeCell.appendChild(tag);
+      }
+      cell(tr, c.descriptor);
+      cell(tr, c.source);
+      cell(tr, c.start);
+      cell(tr, c.end);
+      cell(tr, c.obs);
+      cell(tr, c.frequency);
+      function choose() {
+        radio.checked = true;
+        chosen = c.code;
+        document.getElementById("manual").value = "";
+        document.getElementById("go").disabled = false;
+      }
+      tr.addEventListener("click", choose);
+      radio.addEventListener("change", choose);
+      body.appendChild(tr);
+      if (i === 0 && list.length === 1) { choose(); }
+    });
+    report();
+  }
+
+  document.getElementById("manual").addEventListener("input", function (e) {
+    var v = e.target.value.trim();
+    if (v) {
+      chosen = v;
+      var r = document.querySelector("input[name=cand]:checked");
+      if (r) { r.checked = false; }
+    } else {
+      chosen = null;
+    }
+    document.getElementById("go").disabled = !chosen;
+  });
+
+  document.getElementById("go").addEventListener("click", function () {
+    if (!chosen || done) { return; }
+    document.getElementById("go").disabled = true;
+    note("Confirming " + chosen + " against DLX...");
+    // remember_binding DLX-confirms before it stores, so a typed ticker cannot poison
+    // the store. Its refusal is the useful answer, which is why the error is shown here
+    // rather than swallowed.
+    request("tools/call", {name: "remember_binding",
+                           arguments: {base_descriptor: data.description,
+                                       code_at_db: chosen}})
+      .then(function (res) {
+        var failed = res && res.isError;
+        if (failed) {
+          var why = "";
+          try { why = res.content.map(function (b) { return b.text || ""; }).join(" "); }
+          catch (e) { why = "DLX would not confirm it."; }
+          note(why || "DLX would not confirm that ticker.", "err");
+          document.getElementById("go").disabled = false;
+          return;
+        }
+        done = true;
+        note("Saved. " + chosen + " is now bound to \\u201c" + data.description +
+             "\\u201d and will not be asked again.", "ok");
+        // Hand back to the model, or the operator has to retype the answer they just
+        // clicked. `role: user` because it is the operator's decision, not the server's.
+        send({jsonrpc: "2.0", id: nextId++, method: "ui/message",
+              params: {role: "user", content: {type: "text",
+                text: "I picked " + chosen + " for \\u201c" + data.description +
+                      "\\u201d and it is saved. Continue building the chart with it."}}});
+      })
+      .catch(function (err) {
+        note("Could not save: " + err, "err");
+        document.getElementById("go").disabled = false;
+      });
+  });
+
+  window.addEventListener("message", function (e) {
+    var d = (e && e.data) || {};
+    if (d.id != null && pending[d.id]) {
+      var p = pending[d.id]; delete pending[d.id];
+      if (d.error) { p.no(d.error.message || JSON.stringify(d.error)); } else { p.ok(d.result); }
+      return;
+    }
+    if (d.id === 1) {                       // initialize result
+      send({jsonrpc: "2.0", method: "ui/notifications/initialized", params: {}});
+      report();
+      return;
+    }
+    if (d.method === "ui/notifications/tool-result") {
+      var p = d.params || {};
+      data = p.structuredContent || null;
+      if (data) { draw(); }
+      else { note("No candidate data arrived with the tool result.", "err"); }
+    }
+  });
+
+  send({jsonrpc: "2.0", id: 1, method: "ui/initialize",
+        params: {protocolVersion: "2026-01-26",
+                 appInfo: {name: "haver-chart picker", version: "1.0.0"},
+                 appCapabilities: {availableDisplayModes: ["inline"]}}});
+  report();
+  window.addEventListener("resize", report);
+})();
+</script>
+</body></html>
+"""
+
+    @mcp.resource(_PICKER_URI, app=AppConfig(prefers_border=True))
+    def _pick_series_ui() -> str:
+        """The picker view: candidate table, free-text fallback, Submit."""
+        return _PICKER_HTML
+
+    @mcp.tool(app=AppConfig(resource_uri=_PICKER_URI, visibility=["app", "model"]),
+              meta={"ui/resourceUri": _PICKER_URI})
+    def pick_series(ctx: Context, base_descriptor: str, applied_transform: str = "",
+                    formula: str = "", sa_hint: str = "", freq_hint: str = "") -> ToolResult:
+        """Show the operator a table of candidates for a PARKED series, so they can choose.
+
+        Call this ONLY when `resolve_series` parked a slot. A resolved slot has nothing to
+        pick, and a panel offering a choice that was already made is noise.
+
+        The operator's click records the binding itself, through `remember_binding`, so the
+        answer survives to later chats. You do not need to call `remember_binding`
+        afterwards — wait for their selection to come back as a message, then carry on with
+        `render_chart`.
+
+        Columns are the ones that settle a choice by eye: who publishes it, when it starts,
+        the LIVE end date (a stale one is how a discontinued series announces itself),
+        observation count and frequency.
+        """
+        out = lane.pick_series(base_descriptor, applied_transform, formula,
+                               sa_hint, freq_hint)
+        n = len(out.get("candidates") or [])
+        if out.get("status") == "resolved":
+            summary = (f"{base_descriptor!r} did not need a choice — it resolved to "
+                       f"{out.get('resolved')}. No panel shown; carry on.")
+        else:
+            summary = (f"Showing {n} candidate(s) for {base_descriptor!r} in a picker "
+                       f"panel. WAIT for the operator to choose — their selection comes "
+                       f"back as a message and is recorded for you. Do not guess a "
+                       f"ticker and do not call remember_binding yourself.")
+        # Text mirrors the instruction for the same reason as `_result_text` (G20a): a
+        # client that forwards only `content` would otherwise leave the model with a panel
+        # it cannot see and no idea that waiting is the correct behaviour.
+        return ToolResult(content=[TextContent(type="text", text=summary)],
+                          structured_content=out)
+
+
 if __name__ == "__main__":
     if HTTP_ENABLED:
         # Loopback ONLY. cloudflared is the public edge (§14.6); uvicorn must never be
