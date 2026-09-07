@@ -40,11 +40,21 @@ supply from memory bypasses all of it.
    - Pass `plot_kind` — `"bar"`, `"stacked_bar"` or `"line"` — from what you saw in
      step 1. It travels in the returned `slot`, so setting it once is enough.
 
-3. **Handle parks by asking.** `status: "parked"` is a normal outcome, not a failure.
-   Show the user the top-3 `candidates` with their `similarity` and
-   `exact_token_match`, and ask which is right. **Never bind the top hit yourself.**
-   Similarity alone is not evidence: `DFBACTS` and `DFBACTDS` scored 0.909 against each
-   other and one of them was the wrong directional sibling.
+3. **Handle parks with `pick_series`.** `status: "parked"` is a normal outcome, not a
+   failure. Call `pick_series` with the same `base_descriptor` and the same
+   `applied_transform`/`formula` you passed to `resolve_series`. It opens a panel listing
+   each candidate with its source, start date, live end date, observation count and
+   frequency, and the user's click records the binding — so do not call
+   `remember_binding` afterwards. Wait for their choice to come back as a message.
+
+   Where no `pick_series` tool is offered, fall back to showing the top-3 `candidates`
+   with `similarity` and `exact_token_match` and asking which is right.
+
+   **Never bind the top hit yourself.** Similarity alone is not evidence: `DFBACTS` and
+   `DFBACTDS` scored 0.909 against each other and one of them was the wrong directional
+   sibling. Note that similarity and `exact_token_match` are the reasons the resolver
+   could not decide — they are not a basis for you to decide either, which is why the
+   panel shows the data instead.
 
 4. **Render** with `render_chart`, passing the `slot` blocks `resolve_series` returned.
    Give each series a `proposed_legend`: a short human-readable label built from the

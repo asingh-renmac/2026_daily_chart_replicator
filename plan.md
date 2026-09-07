@@ -2824,7 +2824,7 @@ the operator is waiting, on the system whose failure mode is a hang.
 
 **v1 is the table and a Submit button. Nothing else.**
 
-**BUILT 2026-09-06, pending a client check.** A separate `pick_series` tool rather than a
+**WORKING 2026-09-06, confirmed in Claude Desktop.** A separate `pick_series` tool rather than a
 panel on `resolve_series`, and that follows from how the extension works: a UI attaches to
 a TOOL, so whichever tool carries it renders a panel on EVERY call. On `resolve_series`
 that is one panel per series — six charts, six panels, five with nothing to choose. A
@@ -2846,8 +2846,18 @@ Submit calls `remember_binding` from inside the view (`tools/call`, permitted by
 the bind from the view rather than asking the model to do it afterwards means the answer
 cannot be lost to a model that forgets to follow up.
 
-Locked by selftest §13 (ten checks). Every one of the four §16.3 rules fails SILENTLY, so
-a test is the only thing stopping five rounds of measurement from being paid for twice.
+Locked by selftest §13 (fourteen checks). Every one of the four §16.3 rules fails SILENTLY,
+so a test is the only thing stopping five rounds of measurement from being paid for twice.
+
+**A working tool that nobody calls — the last defect, and the most instructive.** v1 shipped
+correct and sat unused: the model parked, then asked for a ticker in prose. That was the
+RIGHT behaviour for what it had been told, because `resolve_series`'s docstring predated the
+picker and said to ask. Adding a tool does not tell anyone the tool is there, and a
+description is read once per connection, so it could never reach a conversation already
+under way. The instruction moved into the RESULT — `_park_text`, arriving with every call,
+naming `pick_series` on a park and staying silent on a bind. Third time this project has
+landed on the same conclusion (G20a chart links, the in-band render note, now this): on this
+client, **guidance that is not in the tool result does not exist.**
 
 ### §16.1 What the library already provides — measured 2026-09-06
 
