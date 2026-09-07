@@ -145,10 +145,27 @@ store built on the laptop is invisible to the server until it is renamed.
 > §15 added `remember_binding` and `forget_binding` — will not show them to a client that
 > connected before the restart. The client states plainly that the tool does not exist,
 > and reasons confidently from the old tool set, so it reads as a server fault rather than
-> a stale client. Fully **quit and relaunch** Claude Desktop (closing the window is not
-> enough on Windows; quit from the tray), then start a **new chat** — an open conversation
-> keeps the list it began with. Toggle the connector off/on if that is not enough. Only
-> remove and re-add as a last resort, since that discards the Entra authorization.
+> a stale client.
+>
+> **Toggle the connector off and on** (Settings → Connectors), then start a new chat. Do
+> that FIRST, not last. Quitting and relaunching the app is the intuitive move and it is
+> not reliable: measured 2026-09-06, a full quit-and-relaunch plus a new chat still showed
+> the old four tools, and an off/on toggle picked up the new ones immediately. The cache
+> being invalidated does not live in the window, so closing the window does not clear it.
+> Only remove and re-add as a last resort, since that discards the Entra authorization.
+>
+> **Before touching the client at all, prove the server is actually serving the new tool**,
+> or you will toggle and relaunch against a host that never restarted:
+>
+> ```bash
+> scp scripts/avd_verify_running.py avd:C:/Users/mcpdeploy/
+> ssh avd 'Set-Location C:\Users\madz\Work\asingh\haver-chart\repo; & "C:\Users\madz\envs\haver-chart\Scripts\python.exe" C:\Users\mcpdeploy\avd_verify_running.py'
+> ```
+>
+> It prints the host's commit, the process start time against `server.py`'s write time
+> (a process older than the file means the restart did not take), and the tool list the
+> deployed code registers. Two failures look identical from the chat window — code not
+> pulled, and code pulled but not loaded — and this separates them without a guess.
 >
 > Confirm before going further by asking which tools the connector exposes. §15 has four:
 > `resolve_series`, `remember_binding`, `forget_binding`, `render_chart`.
