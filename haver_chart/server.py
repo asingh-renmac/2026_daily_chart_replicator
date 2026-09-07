@@ -482,7 +482,23 @@ if HTTP_ENABLED:
         _trace("resource_read")
         return _PROBE_HTML
 
-    @mcp.tool(app=AppConfig(resource_uri=_PROBE_URI, visibility=["app", "model"]))
+    # `meta=` carries the DEPRECATED flat pointer beside the current nested one, because the
+    # spec defines both and hosts are mid-migration:
+    #
+    #   _meta.ui.resourceUri      <- current shape, all FastMCP 3.4.7 emits
+    #   _meta["ui/resourceUri"]   <- deprecated, still what pre-GA hosts read
+    #
+    # Measured, not guessed: the trace shows Claude negotiating the extension, declaring it
+    # accepts `text/html;profile=mcp-app`, calling the tool, and then never issuing
+    # `resources/read`. A host that reads only the flat key behaves in exactly that way — it
+    # sees no UI pointer it recognises, so there is nothing for it to fetch.
+    #
+    # The reference TypeScript helper `registerAppTool` populates both keys from either one
+    # for this precise reason, so emitting both is the documented compatibility posture
+    # rather than a hack. Harmless to a host reading the nested key: it is one extra
+    # ignored `_meta` entry. Delete it when the flat key is removed before GA.
+    @mcp.tool(app=AppConfig(resource_uri=_PROBE_URI, visibility=["app", "model"]),
+              meta={"ui/resourceUri": _PROBE_URI})
     def ui_probe(ctx: Context) -> dict:
         """TEMPORARY diagnostic (G20b). Ask for it by name to test the widget transport.
 
