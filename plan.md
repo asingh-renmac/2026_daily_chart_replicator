@@ -2830,8 +2830,8 @@ the operator is waiting, on the system whose failure mode is a hang.
 |---|---|
 | FastMCP 3.4.7 ships `fastmcp.apps` and `ui://` plumbing in the BASE package | a bare `ui://` resource registers with no new dependency |
 | `AppConfig(resource_uri=..., visibility=[...])` on a tool is the wire format | tool→UI wiring is a decorator argument, not hand-rolled protocol |
-| A built-in **`Choice`** provider exists — "LLM presents options, user clicks one, selection flows back as a message" | that is the picker's exact shape; §16 may be mostly configuration |
-| `Choice` needs `prefab_ui`, behind the `fastmcp[apps]` extra, **not installed** in either venv | it is a real install decision, deferred until G20b answers |
+| A built-in **`Choice`** provider exists — "LLM presents options, user clicks one, selection flows back as a message" | ~~that is the picker's exact shape~~ — **REJECTED 2026-09-06 after reading the source.** It renders a card with one button per option, and an option is a STRING. The picker's whole value is the columns beside each candidate (database, source, start, live end date, observation count, frequency); a row of buttons cannot carry them. It also returns the choice as a chat message rather than a tool call, so the model re-runs the resolve instead of the binding being recorded directly |
+| `Choice` needs `prefab_ui`, behind the `fastmcp[apps]` extra, **not installed** in either venv | moot now that `Choice` is rejected. Hand-rolling adds NO dependency to the serving venv, and G20b has already produced a working reference view to copy |
 
 The G20b probe is therefore built with **no new dependency**: `ui_probe` plus a static
 `ui://haver-chart/g20b-probe.html`, registered under `HTTP_ENABLED` only so the stdio
@@ -2842,7 +2842,47 @@ answers. It is TEMPORARY and comes out once the gate reports.
 | Gate | What it proves | State |
 |---|---|---|
 | G20a | Three charts in one turn produce three `chart_url`s in the visible reply (AVD) | **PASSED 2026-09-06.** Also locked by selftest §11 (6 checks) so it cannot regress silently |
-| G20b | **STOP.** A hello-world `ui://` resource survives the tunnel and Entra. If MCP Apps do not work through this transport, §16 does not proceed | probe built, awaiting a restart |
+| G20b | **STOP.** A hello-world `ui://` resource survives the tunnel and Entra. If MCP Apps do not work through this transport, §16 does not proceed | **PASSED 2026-09-06.** Panel painted in Claude Desktop through Cloudflare + Entra. Four defects had to be cleared first — see §16.3 |
+
+### §16.3 What G20b cost, and the four things a view MUST do — measured 2026-09-06
+
+The gate took five deploy-restart rounds, and not one of them was a wrong guess narrowing
+down a list: each measured a different link and moved the failure one step later. Recorded
+because the picker has to satisfy all four, and three of them fail SILENTLY — the client
+reports success, or reports a fault that names the wrong layer.
+
+| # | Defect | Symptom it produced | Fix |
+|---|---|---|---|
+| 1 | Client's cached tool manifest | new tools invisible after a full app relaunch | toggle the connector off/on. Relaunching is NOT enough (see `DEPLOY.md`) |
+| 2 | Only the nested `_meta.ui.resourceUri` was emitted | extension negotiated, tool called, `resources/read` **never issued** | emit the deprecated flat `_meta["ui/resourceUri"]` alongside it. The spec keeps both until GA and the reference TS helper writes both |
+| 3 | `app=True` on a resource emits `_meta.ui = true`, a BOOLEAN | "problem displaying content" **in a fresh chat with no tool call** — hosts prefetch UI resources on connect, so a malformed resource fails before anything is asked for | `app=AppConfig(...)`, which emits the UIResourceMeta OBJECT the spec types |
+| 4 | The view was a static document | host reported "rendered an interactive widget"; operator saw nothing | a view is an MCP CLIENT: `ui/initialize` → `ui/notifications/initialized`, and `ui/notifications/size-changed` or the frame keeps zero height |
+
+Defect 4 is the one to remember. **A view without script cannot render at all**, because
+the handshake that earns it a height is written in script. `ui_probe_min` was built to test
+whether a sandbox CSP blocks inline code and became the proof of the opposite: it stays
+blank permanently, by construction.
+
+What the passing handshake reported, which is what §16 gets to build on:
+
+```
+protocolVersion   2026-01-26
+hostInfo          Claude 1.0.0
+hostCapabilities  serverTools{listChanged}, serverResources, openLinks, downloadFile,
+                  updateModelContext{text,image}, message{text}, sandbox, logging
+hostContext       theme, locale, timeZone
+notifications     tool-input-partial, tool-input, tool-result, host-context-changed
+```
+
+Two of those decide the picker's design. `tool-result` means the view RECEIVES the
+candidate list, so the table needs no second fetch. `serverTools` means the view CAN CALL
+`remember_binding` itself, so Submit records the bind directly instead of asking the model
+to do it — which also means the bind cannot be lost to a model that forgets to follow up.
+
+Diagnosis ran off `/g20b`, an unauthenticated route reporting whether the tool arrived and
+whether the HTML was fetched. Worth keeping the habit: "the tool call never came" and "the
+call came but the resource was never asked for" are indistinguishable from the chat window,
+and each guess between them costs a restart at the console.
 
 ### §16.2 Defect found while running G20a — chat memory is exact-match
 
