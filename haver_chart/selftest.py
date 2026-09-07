@@ -611,7 +611,7 @@ def _import_http_server():
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = was
-    return {"tools": tools, "resources": resources,
+    return {"tools": tools, "resources": resources, "module": mod,
             "PICKER_URI": mod._PICKER_URI, "PICKER_HTML": mod._PICKER_HTML}
 
 
@@ -658,6 +658,24 @@ else:
     check("innerHTML" not in _html,
           "candidate text is never written as markup",
           "rows carry DLX descriptors this server did not author")
+
+    # A tool nobody is told about is a tool nobody calls. §16 v1 shipped working and sat
+    # unused: the model hit a park and asked for a ticker in prose, which is exactly what
+    # the docstring — written before the picker existed — told it to do. The instruction
+    # has to ride in the RESULT, which arrives every time, not in a description read once.
+    _srv_http = _srv["module"]
+    _parked = _srv_http._park_text({"status": "parked", "reason": "ties", "candidates": []})
+    check("pick_series" in _parked and "ACTION REQUIRED" in _parked,
+          "a PARKED result tells the model to call pick_series",
+          "the failure mode is silent: the model asks in prose and the panel never opens")
+    check("in prose" in _parked and "do NOT bind a candidate yourself".lower()
+          in _parked.lower(),
+          "and forbids both prose-asking and self-binding")
+    _bound = _srv_http._park_text({"status": "resolved", "resolved": "a0m059@bci"})
+    check("pick_series" not in _bound and "ACTION REQUIRED" not in _bound,
+          "a RESOLVED result says nothing about the picker",
+          "no panel for a series that needed no choice — the whole point of a separate tool")
+    check("a0m059@bci" in _bound, "a resolved result still names the bound code in text")
 
 n_bad = sum(1 for ok, _, _ in _RESULTS if not ok)
 print("\n" + "=" * 78)

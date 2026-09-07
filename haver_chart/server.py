@@ -144,6 +144,47 @@ async def chart(request):
                         headers={"Cache-Control": "private, max-age=3600"})
 
 
+def _park_text(out: dict) -> str:
+    """Text block for a resolve result, carrying the next action when a slot parks.
+
+    Built after §16 v1 shipped and did nothing. The model hit a park and asked the
+    operator to type a ticker in prose, which was CORRECT behaviour — the docstring said
+    to do exactly that, and a docstring written before the picker existed is what the
+    model had. Adding a tool does not tell anyone the tool is there.
+
+    Same reasoning as `_result_text` (G20a): a tool description is read once per
+    connection and a skill does nothing until someone installs it, whereas this text
+    arrives with EVERY result. It is the only guidance a client cannot skip.
+
+    Degrades honestly. Over stdio there is no picker and no UI host, so the instruction
+    reverts to asking in prose rather than naming a tool the model cannot see.
+    """
+    lines = [f"status: {out.get('status')}"]
+    if out.get("resolved"):
+        lines.append(f"resolved: {out['resolved']}")
+    if out.get("reason"):
+        lines.append(f"reason: {out['reason']}")
+    for cand in out.get("candidates") or []:
+        lines.append(f"candidate: {cand.get('code')} "
+                     f"(exact={cand.get('exact_token_match')}, "
+                     f"sim={cand.get('similarity')}) {cand.get('descriptor') or ''}")
+    if out.get("status") != "parked":
+        return "\n".join(lines)
+    if HTTP_ENABLED:
+        lines.append(
+            "ACTION REQUIRED — this slot PARKED. Call `pick_series` now, with the SAME "
+            "base_descriptor and the same applied_transform/formula you passed here. It "
+            "shows the operator a table of candidates with source, start date, LIVE end "
+            "date and observation count, and their click records the binding for you. Do "
+            "NOT ask them to type a ticker in prose, and do NOT bind a candidate "
+            "yourself. Wait for their choice — it comes back to you as a message.")
+    else:
+        lines.append(
+            "ACTION REQUIRED — this slot PARKED. Show the operator the candidates above "
+            "and ask which is right. Never bind the top hit on similarity alone.")
+    return "\n".join(lines)
+
+
 @mcp.tool
 def resolve_series(
     base_descriptor: str,
@@ -180,9 +221,10 @@ def resolve_series(
         through in the returned `slot`, so set it here and `render_chart` draws it.
         Anything else raises rather than quietly drawing a line.
 
-    A PARK IS A NORMAL RESULT, NOT AN ERROR. If `status` is "parked", show the operator
-    the `candidates` (top 3, with `similarity` and `exact_token_match`) and ASK which is
-    right. Never silently bind the top hit: `DFBACTS` vs `DFBACTDS` scored 0.909
+    A PARK IS A NORMAL RESULT, NOT AN ERROR. When `status` is "parked", follow the
+    ACTION REQUIRED line in the text of this tool's result — where a `pick_series` tool
+    exists, that means handing the choice to the operator as a panel instead of asking in
+    prose. Never silently bind the top hit: `DFBACTS` vs `DFBACTDS` scored 0.909
     similarity on the WRONG directional sibling, which is why `exact_token_match` —
     not `similarity` — is the column that justifies a bind.
 
@@ -194,12 +236,14 @@ def resolve_series(
     came from a park THIS operator resolved earlier (see `remember_binding`).
     """
     try:
-        return lane.resolve_one(
+        out = lane.resolve_one(
             base_descriptor=base_descriptor, applied_transform=applied_transform,
             formula=formula, sa_hint=sa_hint, freq_hint=freq_hint, axis=axis,
             lag=lag, plot_kind=plot_kind)
     except Exception as exc:
         raise ToolError(lane.explain(exc))
+    return ToolResult(content=[TextContent(type="text", text=_park_text(out))],
+                      structured_content=out)
 
 
 @mcp.tool
