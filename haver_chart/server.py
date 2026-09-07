@@ -383,6 +383,72 @@ def render_chart(
     )
 
 
+# ---------------------------------------------------------------------------
+# G20b probe — TEMPORARY. Remove once the gate has answered (plan.md §16).
+#
+# §16 (the parked-slot picker) is blocked on one unknown that cannot be reasoned about:
+# does a `ui://` resource survive THIS transport — a Cloudflare tunnel, Entra OAuth, and
+# Claude's remote-connector broker? The library side is present in FastMCP 3.4.7, but a
+# library that supports MCP Apps says nothing about whether this particular client
+# renders one for a remote connector.
+#
+# Deliberately built with NO new dependency. The prefab widget components (and the
+# built-in `Choice` provider, which is almost exactly the picker we want) live behind the
+# `fastmcp[apps]` extra, which is NOT installed in the serving venv. Installing it to find
+# out whether the idea works would mutate the production environment to answer a question
+# that a plain HTML string answers just as well. If this probe renders, that install
+# becomes worth doing; if it does not, nothing was disturbed.
+#
+# HTTP only, so the teammate stdio zips never see an extra tool.
+#
+# What a PASS means: the panel appears. What it does NOT prove: that tool DATA reaches
+# the iframe. The script below reports any message it receives, so we learn that too when
+# it happens, but the gate itself is the narrower question of whether anything renders.
+if HTTP_ENABLED:
+    from fastmcp.apps import AppConfig                # noqa: E402
+
+    _PROBE_URI = "ui://haver-chart/g20b-probe.html"
+    _PROBE_HTML = """<!doctype html>
+<html><head><meta charset="utf-8"><title>g20b</title>
+<style>
+ body{font:14px system-ui,sans-serif;margin:0;padding:16px;background:#0f172a;color:#e2e8f0}
+ .ok{font-size:20px;font-weight:600;color:#4ade80;margin-bottom:8px}
+ pre{background:#1e293b;padding:10px;border-radius:6px;white-space:pre-wrap;font-size:12px}
+</style></head>
+<body>
+ <div class="ok">G20b PASS &mdash; this panel rendered</div>
+ <div>A <code>ui://</code> resource survived the tunnel, Entra and the connector broker.</div>
+ <div style="margin-top:12px">Messages received from the host:</div>
+ <pre id="log">(none yet &mdash; static render still counts as a pass)</pre>
+ <script>
+  // Best effort only. The gate is whether this document appears at all; anything
+  // captured here is a bonus that tells us the DATA path works too.
+  var seen = [];
+  window.addEventListener("message", function (e) {
+    try { seen.push(JSON.stringify(e.data).slice(0, 400)); }
+    catch (err) { seen.push(String(e.data)); }
+    document.getElementById("log").textContent = seen.join("\\n\\n");
+  });
+ </script>
+</body></html>
+"""
+
+    @mcp.resource(_PROBE_URI, app=True)
+    def _g20b_probe_ui() -> str:
+        """Static UI resource for the G20b transport probe."""
+        return _PROBE_HTML
+
+    @mcp.tool(app=AppConfig(resource_uri=_PROBE_URI, visibility=["app", "model"]))
+    def ui_probe() -> dict:
+        """TEMPORARY diagnostic (G20b). Ask for it by name to test the widget transport.
+
+        Renders a small panel if MCP Apps work over this connector. Touches no data, no
+        DLX and no store. It will be removed once the question is settled.
+        """
+        return {"probe": "g20b", "rendered_by": "haver-chart",
+                "note": "If you can see a green PASS panel, MCP Apps work here."}
+
+
 if __name__ == "__main__":
     if HTTP_ENABLED:
         # Loopback ONLY. cloudflared is the public edge (§14.6); uvicorn must never be
