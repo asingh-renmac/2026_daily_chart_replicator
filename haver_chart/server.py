@@ -448,6 +448,27 @@ if HTTP_ENABLED:
         return {"probe": "g20b", "rendered_by": "haver-chart",
                 "note": "If you can see a green PASS panel, MCP Apps work here."}
 
+    @mcp.tool
+    def ui_probe_plain() -> dict:
+        """TEMPORARY diagnostic (G20b control). Identical to `ui_probe` but with NO UI.
+
+        The control half of a two-tool experiment. `ui_probe` carries MCP Apps metadata;
+        this one is an ordinary tool. Which of the pair a client can see separates three
+        explanations that otherwise look identical from the outside:
+
+        - BOTH visible  -> tools arrive fine; the open question is only whether the panel
+          renders, which is what `ui_probe` then answers.
+        - ONLY THIS ONE -> the client is DROPPING tools that carry UI metadata. That is a
+          G20b failure, and a definitive one: §16 stops rather than being debugged.
+        - NEITHER       -> nothing to do with MCP Apps. The tool manifest is stale, so the
+          fix is on the client or the broker, not here.
+
+        Guessing between those costs a restart each time; this costs one.
+        """
+        return {"probe": "g20b-control", "has_ui": False,
+                "note": "Plain tool, no MCP Apps metadata. Seeing this one but not "
+                        "ui_probe means the client rejects UI-bearing tools."}
+
 
 if __name__ == "__main__":
     if HTTP_ENABLED:

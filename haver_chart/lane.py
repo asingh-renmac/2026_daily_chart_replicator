@@ -212,9 +212,13 @@ def resolve_one(base_descriptor: str, applied_transform: str = "", formula: str 
     # Provenance: a bind that came out of THIS operator's chat memory must say so.
     # Without it, a remembered answer is indistinguishable from a fresh catalog match,
     # and an operator who wants to correct one cannot tell there is anything to correct.
+    # Uses the same lookup the resolver used, not a bare key test: since §16.2 a bind can
+    # come from chat memory via the forgiving key, and a stricter check here would report
+    # those as fresh catalog matches — leaving the operator no hint that a remembered
+    # answer is what needs correcting.
     from_memory = bool(
         resolved and slot.get("bound_via_query") == "(learned)"
-        and R._norm_key(base_descriptor) in CHAT.load())
+        and R.learned_lookup(CHAT.load(), base_descriptor) is not None)
     reason = slot.get("reason") or ""
     if from_memory:
         reason = (f"{reason} — from your chat memory; call forget_binding"

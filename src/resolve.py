@@ -88,8 +88,82 @@ _LEARNED_FILE = "learned_descriptors.json"
 
 
 def _norm_key(text: str) -> str:
-    """Stable lookup key for a descriptor: lower-cased, whitespace-collapsed."""
+    """Stable lookup key for a descriptor: lower-cased, whitespace-collapsed.
+
+    Deliberately unchanged. Every text-keyed store on disk is filed under this exact
+    function, so loosening it here would not widen matching — it would orphan every
+    entry already written. The forgiving behaviour lives in `_loose_key` instead, as a
+    SECOND lookup, which needs no migration.
+    """
     return re.sub(r"\s+", " ", (text or "").strip().lower())
+
+
+_ARTICLES = ("the ", "a ", "an ")
+_FORMULA_SHAPED = re.compile(r"^[a-z][a-z0-9_%]*\s*\(.*\)\s*$")
+
+
+def _loose_key(text: str) -> str:
+    """A forgiving second-chance key for descriptor lookups (plan.md §16.2).
+
+    `_norm_key` forgives case and spacing and nothing else, so a single leading article
+    re-parks a series the operator has already answered. That bites hard here because the
+    descriptor is WRITTEN BY THE MODEL from the commentary, so its wording drifts between
+    runs. Measured against the real store: `civilian unemployment rate` hits, while
+    `the civilian unemployment rate` and `civilian unemployment rate (SA)` both miss.
+
+    Drops leading articles, parenthetical qualifiers and punctuation. It deliberately does
+    NOT drop a leading country or region word — `US retail sales` and `UK retail sales`
+    are different series, and folding those together would be a silent wrong bind of the
+    worst kind, which is exactly what this lane refuses to do.
+
+    This is canonicalization, NOT similarity: two descriptors either reduce to the same
+    string or they do not. Nothing here matches on resemblance, because these are
+    unreviewed personal answers and a plausible-looking wrong match is worse than a park.
+    """
+    s = _norm_key(text)
+    # A formula-shaped descriptor is ALREADY canonical, and its parentheses carry the
+    # substance rather than a qualifier. Stripping them reduced `zs(nfib: net percent
+    # raising worker compensation...)` and `zs(nfib: single most important problem...)`
+    # to the same key, `zs` — two different series, one key. `learned_lookup` refused to
+    # pick between them so nothing was mis-bound, but relying on that is backwards: the
+    # right move is not to mangle a formula in the first place.
+    if _FORMULA_SHAPED.match(s):
+        return s
+    s = re.sub(r"\([^)]*\)", " ", s)                 # qualifiers like "(SA)"
+    s = re.sub(r"[^a-z0-9%+&/ ]+", " ", s)           # punctuation out; unit chars kept
+    s = re.sub(r"\s+", " ", s).strip()
+    for article in _ARTICLES:
+        if s.startswith(article):
+            return s[len(article):]
+    return s
+
+
+def learned_lookup(learned: dict, descriptor: str) -> Optional[dict]:
+    """Exact key first, then one forgiving retry (§16.2).
+
+    The retry fires only when the loose key identifies exactly ONE code. If two stored
+    descriptors collapse together and disagree about the ticker, this returns nothing and
+    the slot parks: an ambiguous memory is not a licence to pick one.
+
+    A loose hit is not a shortcut past the guards. Callers still re-confirm the code
+    against DLX and still run `_meta_reject` and `double_transform_reason` over it, so
+    this widens what reaches the checks, never what escapes them.
+    """
+    if not learned:
+        return None
+    exact = learned.get(_norm_key(descriptor))
+    if exact is not None:
+        return exact
+    want = _loose_key(descriptor)
+    if not want:
+        return None
+    hits: dict[str, object] = {}
+    for key, val in learned.items():
+        if _loose_key(key) == want:
+            code = val.get("code") if isinstance(val, dict) else val
+            if code:
+                hits[str(code).strip().lower()] = val
+    return next(iter(hits.values())) if len(hits) == 1 else None
 
 
 def _read_json(path: Path) -> dict:
@@ -1075,7 +1149,7 @@ def resolve_slot(slot: dict, *,
     # 3a) LEARNED fast-path (Part 4): a previously-approved description binds instantly
     # — but still re-confirmed + hard-meta cross-checked (a stale code or a metadata
     # change must never silent-serve from the cache).
-    lk = learned.get(_norm_key(read_desc)) if learned else None
+    lk = learned_lookup(learned, read_desc)
     lcode = (lk or {}).get("code") if isinstance(lk, dict) else lk
     if lcode and confirm(lcode):
         lmeta = get_meta(lcode) if get_meta else None

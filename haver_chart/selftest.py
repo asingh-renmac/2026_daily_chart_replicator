@@ -509,6 +509,68 @@ check(_stdio.splitlines()[0].startswith("path: "),
 check("chart_url" not in _stdio,
       "stdio never advertises a url the operator has no way to open")
 
+print("\n12. Remembered answers survive rewording (§16.2)")
+# G20a turned this up in the field: a slot the operator had already answered re-parked
+# because the request said "THE civilian unemployment rate". The descriptor is written by
+# the model from the commentary, so its wording drifts run to run, and an exact-match
+# memory misses far more often than its entry count suggests.
+#
+# What must NOT happen is the overcorrection. These are unreviewed personal answers, so
+# the rule is canonicalization — two strings reduce to one or they do not — never
+# resemblance, and never a guess when the reduction is ambiguous.
+import resolve as _R  # noqa: E402
+
+_mem = {"civilian unemployment rate": {"code": "LR@USECON"},
+        "federal funds target rate": {"code": "ffedtare@usecon"}}
+
+check(_R._norm_key("Civilian  Unemployment RATE") == "civilian unemployment rate",
+      "_norm_key is UNCHANGED, so no store on disk is orphaned")
+
+for _phrase in ("civilian unemployment rate", "the civilian unemployment rate",
+                "Civilian Unemployment Rate", "civilian  unemployment, rate",
+                "civilian unemployment rate (SA)"):
+    _hit = _R.learned_lookup(_mem, _phrase)
+    if not (_hit and _hit["code"] == "LR@USECON"):
+        check(False, "rewordings reach the remembered bind", repr(_phrase))
+        break
+else:
+    check(True, "rewordings reach the remembered bind",
+          "article, case, spacing, punctuation and a parenthetical all forgiven")
+
+check(_R.learned_lookup(_mem, "US civilian unemployment rate") is None,
+      "a country prefix is NOT forgiven",
+      "US vs UK retail sales are different series — folding them is a wrong bind")
+
+# The boundary of the design, asserted so nobody later "improves" it into similarity
+# matching. Extra WORDS are not forgiven, only decoration. Stripping "seasonally
+# adjusted" would also fight `_sa_of_descriptor`, which reads exactly that wording to
+# tell an SA request from an NSA one — and dropping the "not" in "not seasonally
+# adjusted" would invert the operator's meaning.
+check(_R.learned_lookup(_mem, "civilian unemployment rate, seasonally adjusted") is None,
+      "added WORDS are not forgiven — this is canonicalization, not similarity",
+      "forgiving them would collide with the SA/NSA reading in _sa_of_descriptor")
+
+check(_R.learned_lookup(_mem, "nonfarm payrolls") is None,
+      "an unrelated descriptor still misses")
+
+# Two stored descriptors that collapse together but disagree: park, never pick.
+_ambig = {"nfib: percent raising compensation": {"code": "NFIB19@SURVEYS"},
+          "nfib, percent raising compensation!": {"code": "NFIBPQL@SURVEYS"}}
+check(_R._loose_key("nfib: percent raising compensation")
+      == _R._loose_key("nfib, percent raising compensation!"),
+      "the two test descriptors really do collapse together")
+check(_R.learned_lookup(_ambig, "NFIB percent raising compensation") is None,
+      "an AMBIGUOUS loose key binds nothing",
+      "two codes disagree, so the slot parks rather than picking one")
+
+# A formula's parentheses carry its meaning, not a qualifier. Stripping them mapped two
+# different real store entries onto the bare key `zs`.
+check(_R._loose_key("zs(nfib: net percent raising worker compensation)")
+      != _R._loose_key("zs(nfib: single most important problem)"),
+      "formula-shaped descriptors are not flattened onto each other")
+check("(" in _R._loose_key("zs(yryr%(GDPH))"),
+      "a formula keeps its parentheses — it is already canonical")
+
 n_bad = sum(1 for ok, _, _ in _RESULTS if not ok)
 print("\n" + "=" * 78)
 print(f"{len(_RESULTS) - n_bad}/{len(_RESULTS)} checks passed"
