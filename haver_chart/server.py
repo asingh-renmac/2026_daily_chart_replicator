@@ -404,32 +404,77 @@ def render_chart(
 # What a PASS means: the panel appears. What it does NOT prove: that tool DATA reaches
 # the iframe. The script below reports any message it receives, so we learn that too when
 # it happens, but the gate itself is the narrower question of whether anything renders.
+#
+# Corrected 2026-09-06: an earlier version of this comment claimed a STATIC render would
+# count as a pass. It cannot. A view has to complete the postMessage handshake before a
+# host will give it height, so a silent document fails no matter how healthy the transport
+# underneath it is — and it fails while the host cheerfully reports success.
 if HTTP_ENABLED:
     from fastmcp import Context                       # noqa: E402
     from fastmcp.apps import AppConfig, UI_EXTENSION_ID   # noqa: E402
 
     _PROBE_URI = "ui://haver-chart/g20b-probe.html"
+    # A view is an MCP CLIENT, not a web page the host happens to display. It must announce
+    # itself with `ui/initialize`, acknowledge with `ui/notifications/initialized`, and —
+    # where the host leaves height flexible — report its own size with
+    # `ui/notifications/size-changed`. A document that never speaks gets mounted, waited on,
+    # and left at zero height, which is precisely what happened: the host reported that it
+    # "rendered an interactive widget" while the operator saw nothing at all.
+    #
+    # `size-changed` is sent BEFORE the handshake completes as well as after. If the host
+    # ignores an early one, nothing is lost; if the handshake is what is failing, an early
+    # size report is the only thing that can still give the frame a height.
     _PROBE_HTML = """<!doctype html>
 <html><head><meta charset="utf-8"><title>g20b</title>
 <style>
  body{font:14px system-ui,sans-serif;margin:0;padding:16px;background:#0f172a;color:#e2e8f0}
  .ok{font-size:20px;font-weight:600;color:#4ade80;margin-bottom:8px}
- pre{background:#1e293b;padding:10px;border-radius:6px;white-space:pre-wrap;font-size:12px}
+ .row{background:#1e293b;padding:8px;border-radius:6px;margin-top:6px;font-size:12px;
+      white-space:pre-wrap;word-break:break-all}
 </style></head>
 <body>
  <div class="ok">G20b PASS &mdash; this panel rendered</div>
- <div>A <code>ui://</code> resource survived the tunnel, Entra and the connector broker.</div>
- <div style="margin-top:12px">Messages received from the host:</div>
- <pre id="log">(none yet &mdash; static render still counts as a pass)</pre>
+ <div>The view ran the <code>ui/initialize</code> handshake and reported its own size.</div>
+ <div id="log"></div>
  <script>
-  // Best effort only. The gate is whether this document appears at all; anything
-  // captured here is a bonus that tells us the DATA path works too.
-  var seen = [];
-  window.addEventListener("message", function (e) {
-    try { seen.push(JSON.stringify(e.data).slice(0, 400)); }
-    catch (err) { seen.push(String(e.data)); }
-    document.getElementById("log").textContent = seen.join("\\n\\n");
-  });
+ (function () {
+   var log = document.getElementById("log");
+   function send(msg) { window.parent.postMessage(msg, "*"); }
+   function report() {
+     send({jsonrpc: "2.0", method: "ui/notifications/size-changed",
+           params: {width: document.documentElement.scrollWidth,
+                    height: document.documentElement.scrollHeight}});
+   }
+   function say(text) {
+     var d = document.createElement("div");
+     d.className = "row";
+     d.textContent = text;          // textContent, never innerHTML: host data is untrusted
+     log.appendChild(d);
+     report();                      // the panel just grew, so tell the host again
+   }
+   var settled = false;
+   window.addEventListener("message", function (e) {
+     var d = (e && e.data) || {};
+     if (d.id === 1 && !settled) {
+       settled = true;
+       say("initialize result: " + JSON.stringify(d.result || d.error || {}).slice(0, 400));
+       send({jsonrpc: "2.0", method: "ui/notifications/initialized", params: {}});
+     } else if (d.method) {
+       say("host -> view: " + d.method);
+     }
+   });
+   var params = {protocolVersion: "2025-06-18",
+                 appInfo: {name: "haver-chart g20b probe", version: "1.0.0"},
+                 appCapabilities: {availableDisplayModes: ["inline"]}};
+   send({jsonrpc: "2.0", id: 1, method: "ui/initialize", params: params});
+   // One retry under the pre-SEP name. The spec's own no-SDK example still shows a bare
+   // `initialize`, so a host built against that draft would ignore the namespaced form.
+   setTimeout(function () {
+     if (!settled) { send({jsonrpc: "2.0", id: 1, method: "initialize", params: params}); }
+   }, 1200);
+   report();
+   window.addEventListener("resize", report);
+ })();
  </script>
 </body></html>
 """
@@ -477,11 +522,12 @@ if HTTP_ENABLED:
                              "called_tool": any(e["event"].startswith("tool_")
                                                 for e in _G20B_TRACE)})
 
-    # A SECOND, deliberately boring document. The rich probe uses an inline <style> and an
-    # inline <script>, either of which a host's sandbox CSP may refuse. Nothing here does:
-    # no script, no style, no attributes worth objecting to. Registering both means one
-    # restart distinguishes "the sandbox rejects inline code" from "the app never renders at
-    # all", instead of two — and each round trip costs a session at the console.
+    # The no-inline-code control. Kept, but its meaning has INVERTED: it was built to test
+    # whether a sandbox CSP blocks inline script, and the answer turned out to be that a
+    # view without script cannot render AT ALL, because the handshake that earns it a height
+    # is written in script. So this one is now expected to stay blank permanently, and it
+    # earns its keep as the negative half of the pair — if `ui_probe` paints and this does
+    # not, the handshake is demonstrably the thing doing the work.
     _MIN_URI = "ui://haver-chart/g20b-min.html"
     _MIN_HTML = (
         "<!doctype html><html><head><meta charset=\"utf-8\"><title>g20b-min</title></head>"
