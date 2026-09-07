@@ -470,17 +470,57 @@ if HTTP_ENABLED:
         measurement turns into a scheduling problem.
         """
         from starlette.responses import JSONResponse
-        return JSONResponse({"probe_uri": _PROBE_URI, "events": _G20B_TRACE,
-                             "read_html": any(e["event"] == "resource_read"
-                                              for e in _G20B_TRACE),
+        reads = [e.get("which") for e in _G20B_TRACE if e["event"] == "resource_read"]
+        return JSONResponse({"events": _G20B_TRACE,
+                             "read_rich": "rich" in reads,
+                             "read_min": "min" in reads,
                              "called_tool": any(e["event"].startswith("tool_")
                                                 for e in _G20B_TRACE)})
 
-    @mcp.resource(_PROBE_URI, app=True)
+    # A SECOND, deliberately boring document. The rich probe uses an inline <style> and an
+    # inline <script>, either of which a host's sandbox CSP may refuse. Nothing here does:
+    # no script, no style, no attributes worth objecting to. Registering both means one
+    # restart distinguishes "the sandbox rejects inline code" from "the app never renders at
+    # all", instead of two — and each round trip costs a session at the console.
+    _MIN_URI = "ui://haver-chart/g20b-min.html"
+    _MIN_HTML = (
+        "<!doctype html><html><head><meta charset=\"utf-8\"><title>g20b-min</title></head>"
+        "<body><h2>G20b MIN PASS</h2>"
+        "<p>Plain HTML rendered: no inline script, no inline style.</p>"
+        "</body></html>"
+    )
+
+    # `app=AppConfig()` rather than `app=True`, and the difference is not cosmetic.
+    # `app=True` makes FastMCP emit `_meta.ui = true`, a bare BOOLEAN, while the spec types
+    # a resource's `_meta.ui` as a UIResourceMeta OBJECT (csp, domain, prefersBorder). A
+    # host that reads `ui.csp` off `true` raises — which matches the symptom exactly,
+    # including the part that looked strangest: the error appearing in a fresh chat with no
+    # tool call in it. Hosts MAY prefetch UI resources on connect, and the trace shows this
+    # one doing so, so a malformed resource fails before anything is even asked for.
+    @mcp.resource(_PROBE_URI, app=AppConfig(prefers_border=True))
     def _g20b_probe_ui() -> str:
         """Static UI resource for the G20b transport probe."""
-        _trace("resource_read")
+        _trace("resource_read", which="rich")
         return _PROBE_HTML
+
+    @mcp.resource(_MIN_URI, app=AppConfig(prefers_border=True))
+    def _g20b_min_ui() -> str:
+        """Minimal UI resource — no inline script or style."""
+        _trace("resource_read", which="min")
+        return _MIN_HTML
+
+    @mcp.tool(app=AppConfig(resource_uri=_MIN_URI, visibility=["app", "model"]),
+              meta={"ui/resourceUri": _MIN_URI})
+    def ui_probe_min(ctx: Context) -> dict:
+        """TEMPORARY diagnostic (G20b). The plainest possible MCP App panel.
+
+        Same wiring as `ui_probe`, pointed at a document with no inline script and no
+        inline style. If this one paints and `ui_probe` does not, the sandbox CSP is the
+        obstacle and the picker must be built without inline code.
+        """
+        _trace("tool_ui_probe_min")
+        return {"probe": "g20b-min",
+                "note": "If a panel reading 'G20b MIN PASS' appears, plain HTML renders."}
 
     # `meta=` carries the DEPRECATED flat pointer beside the current nested one, because the
     # spec defines both and hosts are mid-migration:
