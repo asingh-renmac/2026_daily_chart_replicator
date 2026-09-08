@@ -207,6 +207,31 @@ the JWT signing key is fixed in `.env`, so sessions survive (`SERVER_SETUP.md` �
 Stop the running `server.py`, start it again the same way, and leave `cloudflared` alone
 unless it also died — a second tunnel for `chart.hvr-mcp.work` must never be created.
 
+**This lane is now supervised, and the supervisor lives in the other repo.** Since
+2026-09-08 the host runs three scheduled tasks defined in `2026_haver_mcp` —
+`scripts\avd_lane_supervisor.ps1` and `scripts\avd_health_watch.ps1`, checked out at
+`C:\Users\madz\Work\asingh\haver-data\repo`. That means:
+
+- A restart no longer needs a human. `McpLaneEnsure` runs every five minutes as `madz`
+  and starts any lane that is down; `McpLaneNightly` recycles all of them at 03:30.
+  Preferred over a hand restart, because it reproduces the exact launch arguments.
+- The launch command line is **recorded in that other repo's `$LANES` table**. Change the
+  interpreter path, the script path or the working directory here and you must change it
+  there too, or the supervisor will faithfully restart the lane the old way.
+- Startup output now lands in `...\logs\haver-chart.out.log` / `.err.log` instead of a
+  console window, and the supervisor's own verdict in `...\logs\supervisor.log`.
+- `/health` publishes `session_suspect` and `last_pull_finished` so the hourly watchdog
+  can see a dead DLX session behind a process that still answers HTTP. A lane that never
+  answers at all shows up as a 502 from the tunnel, which is what a stopped `server.py`
+  looks like from outside.
+
+To restart by hand anyway:
+
+```powershell
+powershell -NoProfile -File C:\Users\madz\Work\asingh\haver-data\repo\scripts\avd_lane_supervisor.ps1 `
+           -Action Restart -Lane haver-chart
+```
+
 ## 8. Verify from outside
 
 ```powershell
