@@ -677,6 +677,49 @@ else:
           "no panel for a series that needed no choice — the whole point of a separate tool")
     check("a0m059@bci" in _bound, "a resolved result still names the bound code in text")
 
+# ── 14. /health reports the DLX session, not just render liveness ───────────────
+# The data lane refused every pull from 2026-09-04 to 09-08 and its /health said so the
+# whole time. The chart lane, on the SAME DLX install, published nothing about the
+# session at all, so its version of that outage would have been invisible. These checks
+# exist because the host watchdog keys on two exact field names, and a rename here
+# silently turns monitoring back off while every test still passes.
+print("\n14. /health exposes DLX session state (post-2026-09-08)")
+
+_lane_mod = lane
+
+_lane_mod._dlx_suspect = False
+_lane_mod._last_dlx_ok = None
+_h = _lane_mod.health()
+check("session_suspect" in _h and "last_pull_finished" in _h,
+      "health() publishes the two fields the watchdog reads",
+      "named exactly as the data lane names them, so one rule covers both")
+
+_lane_mod._dlx_note(True)
+_h = _lane_mod.health()
+check(_h["session_suspect"] is False and _h["last_pull_finished"],
+      "a successful DLX call clears suspect and stamps the time",
+      "the stamp is what a staleness check measures against")
+
+_ok_stamp = _h["last_pull_finished"]
+_lane_mod._dlx_note(False)
+_h = _lane_mod.health()
+check(_h["session_suspect"] is True and _h["last_pull_finished"] == _ok_stamp,
+      "a failure raises suspect but does NOT move the success stamp",
+      "moving it would erase the staleness the watchdog needs to see the fault")
+
+_lane_mod._dlx_note(True)
+check(_lane_mod.health()["session_suspect"] is False,
+      "a later success clears suspect again",
+      "one bad ticker must not latch the flag on forever")
+
+check(_lane_mod.health()["last_pull_finished"] != _h["last_render_finished"]
+      or _h["last_render_finished"] is None,
+      "the DLX stamp is not the render stamp",
+      "a render can finish from cache without touching DLX, so it cannot stand in")
+
+_lane_mod._dlx_suspect = False
+_lane_mod._last_dlx_ok = None
+
 n_bad = sum(1 for ok, _, _ in _RESULTS if not ok)
 print("\n" + "=" * 78)
 print(f"{len(_RESULTS) - n_bad}/{len(_RESULTS)} checks passed"

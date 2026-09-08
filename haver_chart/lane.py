@@ -65,6 +65,38 @@ RENDER_LOCK_TIMEOUT_S = float(os.environ.get("CHART_RENDER_LOCK_TIMEOUT_S", "300
 # answers a plain liveness check, so liveness has to mean "renders are moving".
 _last_render_finished: Optional[str] = None
 
+# DLX session state. The field names are deliberately IDENTICAL to the data lane's
+# (`session_suspect`, `last_pull_finished`) rather than something more natural for a
+# renderer, because the host watchdog already keys on exactly that pair. A second
+# vocabulary for the same condition would mean a second rule to write and keep in step,
+# and rules that exist in two places drift.
+_dlx_suspect = False
+_last_dlx_ok: Optional[str] = None
+
+
+def _dlx_note(ok: bool) -> None:
+    """Record the outcome of a DLX call so `/health` can speak about the session.
+
+    Until this existed the chart lane published render liveness and NOTHING about DLX. So
+    the failure the data lane took four days to notice on 2026-09-08 — a session that dies
+    mid-life, survives its own re-probe, and is cleared only by restarting the process —
+    would have been entirely invisible here, on the very same DLX installation. Render
+    liveness does not cover it: `last_render_finished` stays fresh right up until the
+    moment DLX stops answering, and says nothing afterwards.
+
+    One failure means little on its own. `confirm_ticker` returns False both for a dead
+    session and for a code Haver does not hold, and those are not reliably distinguishable
+    — the same ambiguity §17.14 records for the data lane. That is exactly why the
+    watchdog demands `session_suspect` AND a stale timestamp before calling it a fault,
+    and why this function does not try to be cleverer than the evidence allows.
+    """
+    global _dlx_suspect, _last_dlx_ok
+    if ok:
+        _last_dlx_ok = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        _dlx_suspect = False
+    else:
+        _dlx_suspect = True
+
 # Unique filenames (see `_save_path`) mean this folder only grows, which is harmless on a
 # laptop and unbounded on a server that stays up for months. 0 disables the sweep.
 RETENTION_DAYS = int(os.environ.get("CHAT_RETENTION_DAYS", "14"))
@@ -173,9 +205,16 @@ def _dlx_verify(slot: dict) -> dict:
     if slot.get("status") != R.SLOT_RESOLVED:
         return slot
     for code in (slot.get("codes") or ([slot["resolved"]] if slot.get("resolved") else [])):
-        if code and "@" in code and not R.confirm_ticker(code):
-            slot.update(status=R.SLOT_PENDING, reason=f"DLX confirm failed for {code}")
-            break
+        if code and "@" in code:
+            # The one place every resolve touches DLX, which makes it the honest place to
+            # observe the session from. Noted whether it passes or fails: a success is
+            # the only proof the session is alive, and without recording it there is
+            # nothing for a staleness check to measure against.
+            ok = R.confirm_ticker(code)
+            _dlx_note(ok)
+            if not ok:
+                slot.update(status=R.SLOT_PENDING, reason=f"DLX confirm failed for {code}")
+                break
     return slot
 
 
@@ -548,6 +587,12 @@ def health() -> dict:
     held = _RENDER_LOCK.locked()
     return {"status": "ok", "rendering": held,
             "last_render_finished": _last_render_finished,
+            # Same two names the data lane uses, so one watchdog rule covers both hosts.
+            # `last_pull_finished` is the last DLX call that SUCCEEDED, which is what a
+            # staleness check needs; a render can finish from cache without touching DLX
+            # at all, so `last_render_finished` cannot stand in for it.
+            "session_suspect": _dlx_suspect,
+            "last_pull_finished": _last_dlx_ok,
             "retention_days": RETENTION_DAYS,
             # Whose memory this process is reading, and how much of it. A remembered
             # bind that nobody can see is indistinguishable from a resolver that has
