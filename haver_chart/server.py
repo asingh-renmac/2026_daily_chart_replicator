@@ -1098,7 +1098,10 @@ if HTTP_ENABLED:
         return ToolResult(content=[TextContent(type="text", text=summary)],
                           structured_content=out)
 
-    @mcp.tool(visibility=["app"])
+    # `visibility` lives on AppConfig, not on `tool` — and AppConfig without a
+    # `resourceUri` is exactly right here: this tool renders nothing, it only feeds the
+    # panel that does.
+    @mcp.tool(app=AppConfig(visibility=["app"]))
     def enrich_page(base_descriptor: str, applied_transform: str = "",
                     formula: str = "", sa_hint: str = "",
                     freq_hint: str = "") -> ToolResult:
