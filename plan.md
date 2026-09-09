@@ -3584,7 +3584,47 @@ question about internal ordering rules instead of the one the operator had: is t
 and how long. It now says the series is still loading, that they are fetched one at a time
 because DLX will not answer parallel requests, and how many others are outstanding.
 
-### 19.8 Known flake
+### 19.8 The panel cannot be the only thing that prefetches (2026-09-09)
+
+§19.7 queued every remaining series from the panel and it was still not enough. Reported
+from a four-series run, one resolved and three parked: the operator spent over five
+minutes on series one, found series two instant, and then met a progress bar on series
+three. Five minutes is a dozen times what a cold page costs, so this was not the warmer
+being slow. At most one background call had been delivered at all.
+
+The panel prefetches by calling `enrich_page` through the host. That is a tool call
+originated by an app **after the model's turn has ended**, and nothing in MCP promises a
+host will forward one. Series two was probably not prefetched either — it likely looked
+instant because its metadata was already on disk from earlier testing, which is exactly
+the sort of coincidence that makes a broken mechanism look like a working one.
+
+So the warming now also happens where no host is in the loop. `pick_series_pages` queues
+the remaining descriptors to a single daemon worker inside the lane, which enriches them
+into the same caches. Whichever request eventually asks for a page — the panel's prefetch
+if the host delivers it, or the operator walking onto the page if it does not — finds the
+DLX work already done. Measured cold-ish: page one ready in 8.4s, the other three warmed
+in 6.7s / 9.1s / 8.3s in the background, and all three arrivals then took **0.00s**.
+
+Two disciplines make that safe rather than a rerun of §19.2:
+
+- **One worker, and it yields.** A single daemon thread, and it waits while any
+ foreground `enrich_page` is in flight, so warming a page nobody is looking at can never
+ delay the page somebody is.
+- **The DLX lock now covers the catalogue search too**, not just metadata. With a
+ background warmer there are genuinely two threads that can be inside Haver, and "six
+ concurrent calls hang DLX" is not a rule that applies only to the calls that were
+ convenient to lock.
+
+The panel's own prefetch was kept. It is redundant when the host forwards the calls and
+harmless when it does not, and the two mechanisms fail in different ways.
+
+**Both `pick_series` and `enrich_page` now log their timing to stderr.** The first time
+this was asked — why did series three still spin — the logs could not answer it, and the
+diagnosis had to lean on reasoning about which code path was live. A warm hit and a cold
+fetch are indistinguishable to an operator except in seconds, so the seconds are the thing
+worth recording.
+
+### 19.9 Known flake
 
 `the DLX stamp is not the render stamp` (§14 of the self-test) compares two second-
 resolution timestamps for inequality and fails when a render and a DLX note land in the
