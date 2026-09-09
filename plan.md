@@ -3145,9 +3145,24 @@ is cheaper to discover than to design around.
 
 ### 17.5 Open questions before any of this is built
 
-* Should a data-lane pull be *allowed* to proceed on an unresolved descriptor, or refuse
-  outright? The chart lane refuses. A data pull is more exploratory, and a hard refusal
-  may be the wrong trade.
+* ~~Should a data-lane pull be *allowed* to proceed on an unresolved descriptor?~~
+  **ANSWERED 2026-09-09 — no. It must refuse and show the picker, as the chart lane does.**
+  The precedent turns out to be firmer than an instruction: `render_chart` does not merely
+  ask for resolved slots, `build_chart.render_row` *raises* `render needs every slot
+  resolved`. The chart lane's guarantee does not depend on the model's cooperation, so the
+  data lane's should not either.
+
+  One difference has to shape the design. The chart lane has ONE entry mode — a
+  description off a chart, always needing resolution. The data lane has **two**: "pull
+  `LANAGRA@USECON`" is exact and unambiguous and needs no resolver, while "pull PPI for
+  processed goods" is a description and does. A blanket refusal would break the first, so
+  the refusal attaches to the DESCRIPTION path, not to `get_observations` as such.
+
+  The honest limit: full enforcement is not reachable from the AVD alone. A model can
+  always turn words into a ticker itself via `search_series` on the droplet, and that
+  connector is shared with teammates, so it cannot be constrained for one operator's
+  benefit. The bypass can be made visible — by stamping each pull with whether its ticker
+  came through a confirmed binding — but it cannot be made impossible.
 * Should bindings learned in a data pull be remembered at all, or only for the session? A
   remembered answer is inherited by every future chart, which is a strong commitment to
   make from a throwaway query.
