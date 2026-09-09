@@ -309,6 +309,223 @@ def resolve_one(base_descriptor: str, applied_transform: str = "", formula: str 
     }
 
 
+# ─────────────────── candidate metadata: the picker's whole cost ────────────────────
+#
+# Measured 2026-09-09, not estimated: `haver_metadata` costs ~1.7s per code, and
+# `pick_series` makes TWELVE of them, so a panel takes 14-23s (median 20.4s) before it can
+# show anything. The old docstring said "~200 ms", off by roughly 8x, which is how a
+# 20-second stare at "Waiting for candidates..." was ever considered acceptable.
+#
+# Concurrency is NOT the fix and was measured too: six threads against DLX returned four
+# results in 0.63s and then HUNG, needing a kill after 300s. DLX is a desktop application
+# underneath and does not tolerate being called from several threads. So the levers are
+# (a) never fetch the same code twice, across restarts, and (b) never fetch a page nobody
+# has opened.
+_META_LOCK = threading.Lock()
+# Guards DLX itself, not the cache. Separate locks on purpose: a cache HIT must never wait
+# behind somebody else's 1.7s DLX call.
+_DLX_META_LOCK = threading.Lock()
+_META_TTL_HOURS = 24.0
+_meta_cache: Optional[dict] = None
+
+
+def _meta_cache_path() -> Path:
+    return Path(R.CLARIFIED_DIR) / "metadata_cache.json"
+
+
+def _meta_cache_load() -> dict:
+    global _meta_cache
+    if _meta_cache is None:
+        try:
+            import json
+            _meta_cache = json.loads(_meta_cache_path().read_text(encoding="utf-8"))
+        except Exception:
+            # A corrupt or absent cache is not an error worth surfacing: the only cost of
+            # starting empty is the slow path this exists to avoid.
+            _meta_cache = {}
+    return _meta_cache
+
+
+def candidate_meta(code: str) -> dict:
+    """DLX metadata for one ticker, cached on disk so a restart does not re-pay for it.
+
+    The in-process cache the old code relied on meant every server restart -- nightly, or
+    after any patch reboot -- made the next operator wait the full cold 20s again. Tickers
+    repeat heavily between sessions, so the disk is where this belongs.
+
+    A 24-hour TTL, chosen for the one field that moves: `end`, the LIVE end date, is how a
+    discontinued series announces itself. Staleness of a day cannot hide a discontinuation
+    (those are measured in years) but does keep a genuinely current series from looking
+    stalled after a long weekend.
+    """
+    import json
+    now = datetime.now(timezone.utc).timestamp()
+    with _META_LOCK:
+        cache = _meta_cache_load()
+        hit = cache.get(code)
+        if hit and (now - float(hit.get("at") or 0)) < _META_TTL_HOURS * 3600:
+            return dict(hit.get("meta") or {})
+
+    # Outside the CACHE lock (holding that across a 1.7s call would serialize readers who
+    # only wanted a hit), but inside a DLX lock, which is not optional. Two tabs enriching
+    # at once means two threads in DLX, and that is precisely the combination measured to
+    # hang it on 2026-09-09. The panel serializes its requests too; this is the guarantee
+    # that does not depend on the panel behaving.
+    with _DLX_META_LOCK:
+        with quiet_stdout():
+            meta = R.haver_metadata(code) or {}
+
+    with _META_LOCK:
+        cache = _meta_cache_load()
+        cache[code] = {"at": now, "meta": meta}
+        try:
+            tmp = _meta_cache_path().with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(cache), encoding="utf-8")
+            tmp.replace(_meta_cache_path())
+        except Exception:
+            pass                      # an unwritable cache is slow, not broken
+    return dict(meta)
+
+
+# resolve_one is the OTHER 4s of a page. Memoized per process so `enrich_page` does not
+# repeat the search the batch call already did -- without this, opening a tab pays for the
+# catalog lookup a second time.
+_RESOLVE_MEMO: dict = {}
+_RESOLVE_MEMO_MAX = 64
+
+
+def _resolve_pool(base_descriptor: str, applied_transform: str, formula: str,
+                  sa_hint: str, freq_hint: str, pool_n: int) -> dict:
+    key = (base_descriptor, applied_transform, formula, sa_hint, freq_hint, pool_n)
+    hit = _RESOLVE_MEMO.get(key)
+    if hit is not None:
+        return hit
+    out = resolve_one(base_descriptor, applied_transform, formula, sa_hint, freq_hint,
+                      candidate_n=pool_n)
+    if len(_RESOLVE_MEMO) >= _RESOLVE_MEMO_MAX:
+        _RESOLVE_MEMO.clear()         # crude, but a picker memo has no business growing
+    _RESOLVE_MEMO[key] = out
+    return out
+
+
+def _enrich_and_order(out: dict, base_descriptor: str, sa_hint: str,
+                      candidate_n: int) -> tuple:
+    """The slow half: one DLX call per candidate, then SA-first ordering.
+
+    Split out from `pick_series` so a batched panel can run it for the page being LOOKED
+    at and skip the rest. Five descriptors enriched up front is 101s in a single tool
+    call, which is worse than the five separate panels it replaces.
+    """
+    rows = []
+    for cand in out.get("candidates") or []:
+        code = cand.get("code") or ""
+        meta = candidate_meta(code)
+        descriptor = str(meta.get("descriptor") or cand.get("descriptor") or "")
+        tag = R._sa_of_descriptor(descriptor)
+        rows.append({
+            "code": code,
+            # DLX's descriptor when we have it: it carries the units parenthetical that
+            # says SA or NSA, which the catalog's copy can lack.
+            "descriptor": descriptor,
+            "database": code.split("@")[-1] if "@" in code else "",
+            "source": str(meta.get("shortsource") or ""),
+            "start": str(meta.get("startdate") or ""),
+            "end": str(meta.get("enddate") or ""),
+            "obs": str(meta.get("numobs") or ""),
+            "frequency": str(meta.get("frequency") or ""),
+            "sa": "sa" if tag == "saar" else tag,
+            "exact": bool(cand.get("exact_token_match")),
+            "similarity": cand.get("similarity"),
+        })
+
+    want = R.sa_requested({"sa_hint": sa_hint, "base_descriptor": base_descriptor})
+    target = want or "sa"                                   # D14's default, applied here too
+    # THREE tiers, not a filter. A hard filter on the target would hide a series whose
+    # descriptor simply carries no SA tag at all, and an untagged descriptor is unknown,
+    # not wrong — hiding the only viable answer is worse than showing it last.
+    tiers = {target: 0, "": 1}
+    rows.sort(key=lambda r: (tiers.get(r["sa"], 2), -(r["similarity"] or 0.0)))
+    shown, hidden = rows[:candidate_n], rows[candidate_n:]
+    note = ""
+    if any(r["sa"] == target for r in shown):
+        held = sum(1 for r in hidden if r["sa"] != target)
+        note = (f"ordered {target.upper()} first"
+                + (f"; {held} other-adjustment candidate(s) ranked below the cut" if held else ""))
+    elif rows:
+        note = (f"no candidate's descriptor says {target.upper()} — showing what exists, "
+                f"which is how a series with no {target.upper()} copy looks")
+    return shown, target, note
+
+
+def enrich_page(base_descriptor: str, applied_transform: str = "", formula: str = "",
+                sa_hint: str = "", freq_hint: str = "", candidate_n: int = 5) -> dict:
+    """Enriched, SA-ordered rows for ONE descriptor — what a tab needs when opened.
+
+    The panel holds each page blank until this returns for that page, so the operator
+    never watches rows re-sort under the cursor when SA data lands late. That was a
+    deliberate choice over painting immediately in similarity order: a list that reorders
+    while you are reading it is worse than a list that arrives a moment later.
+    """
+    base_descriptor = _clean_descriptor(base_descriptor)
+    pool_n = max(candidate_n * 3, 12)
+    out = _resolve_pool(base_descriptor, applied_transform, formula, sa_hint, freq_hint,
+                        pool_n)
+    shown, target, note = _enrich_and_order(out, base_descriptor, sa_hint, candidate_n)
+    return {"description": base_descriptor,
+            "sa_target": target,
+            "sa_note": note,
+            "status": out.get("status"),
+            "resolved": out.get("resolved"),
+            "reason": out.get("reason") or "",
+            "candidates": shown}
+
+
+def pick_series_pages(descriptors: list, applied_transform: str = "", formula: str = "",
+                      sa_hint: str = "", freq_hint: str = "", candidate_n: int = 5,
+                      original_request: str = "") -> dict:
+    """One panel for EVERY parked slot in a request, as tabbed pages (§16.6).
+
+    Replaces the one-panel-per-park arrangement, where a five-series request produced five
+    separate panels, each making the operator wait ~20s, and only the last one resuming
+    the request. The earlier panels had to tell the model "resolve the others FIRST and do
+    not render anything yet" — a whole class of coordination that disappears once there is
+    a single panel with a single Save.
+
+    Only the FIRST page is enriched here. Enriching all five would cost ~102s in one tool
+    call, which is slower than the thing it replaces; the panel asks for the others through
+    `enrich_page` as tabs are opened, and prefetches the next one while the operator reads.
+    """
+    cleaned = [_clean_descriptor(d) for d in (descriptors or []) if str(d or "").strip()]
+    pool_n = max(candidate_n * 3, 12)
+
+    pages = []
+    for i, desc in enumerate(cleaned):
+        out = _resolve_pool(desc, applied_transform, formula, sa_hint, freq_hint, pool_n)
+        page = {"description": desc,
+                "status": out.get("status"),
+                "resolved": out.get("resolved"),
+                "reason": out.get("reason") or "",
+                "candidate_count": len(out.get("candidates") or []),
+                "enriched": False,
+                "sa_target": "",
+                "sa_note": "",
+                "candidates": []}
+        if i == 0:
+            shown, target, note = _enrich_and_order(out, desc, sa_hint, candidate_n)
+            page.update({"enriched": True, "candidates": shown,
+                         "sa_target": target, "sa_note": note})
+        pages.append(page)
+
+    return {"pages": pages,
+            "applied_transform": applied_transform,
+            "formula": formula,
+            "original_request": (original_request or "").strip(),
+            # Stamped server-side, never trusted from the panel. A picker sitting in
+            # scroll-back is still fully live HTML, so a click on a panel from an hour ago
+            # would otherwise re-run an hour-old request as if it were fresh (D16).
+            "issued": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+
+
 def pick_series(base_descriptor: str, applied_transform: str = "", formula: str = "",
                 sa_hint: str = "", freq_hint: str = "", candidate_n: int = 5,
                 original_request: str = "", remaining_parks: int = 1) -> dict:
@@ -353,47 +570,9 @@ def pick_series(base_descriptor: str, applied_transform: str = "", formula: str 
     # only place SA status lives (Haver.metadata has no SA field — it is the descriptor's
     # units parenthetical), so the pool has to be fetched before it can be ordered.
     pool_n = max(candidate_n * 3, 12)
-    out = resolve_one(base_descriptor, applied_transform, formula, sa_hint, freq_hint,
-                      candidate_n=pool_n)
-    rows = []
-    for cand in out.get("candidates") or []:
-        code = cand.get("code") or ""
-        with quiet_stdout():
-            meta = R.haver_metadata(code) or {}
-        descriptor = str(meta.get("descriptor") or cand.get("descriptor") or "")
-        tag = R._sa_of_descriptor(descriptor)
-        rows.append({
-            "code": code,
-            # DLX's descriptor when we have it: it carries the units parenthetical that
-            # says SA or NSA, which the catalog's copy can lack.
-            "descriptor": descriptor,
-            "database": code.split("@")[-1] if "@" in code else "",
-            "source": str(meta.get("shortsource") or ""),
-            "start": str(meta.get("startdate") or ""),
-            "end": str(meta.get("enddate") or ""),
-            "obs": str(meta.get("numobs") or ""),
-            "frequency": str(meta.get("frequency") or ""),
-            "sa": "sa" if tag == "saar" else tag,
-            "exact": bool(cand.get("exact_token_match")),
-            "similarity": cand.get("similarity"),
-        })
-
-    want = R.sa_requested({"sa_hint": sa_hint, "base_descriptor": base_descriptor})
-    target = want or "sa"                                   # D14's default, applied here too
-    # THREE tiers, not a filter. A hard filter on the target would hide a series whose
-    # descriptor simply carries no SA tag at all, and an untagged descriptor is unknown,
-    # not wrong — hiding the only viable answer is worse than showing it last.
-    tiers = {target: 0, "": 1}
-    rows.sort(key=lambda r: (tiers.get(r["sa"], 2), -(r["similarity"] or 0.0)))
-    shown, hidden = rows[:candidate_n], rows[candidate_n:]
-    note = ""
-    if any(r["sa"] == target for r in shown):
-        held = sum(1 for r in hidden if r["sa"] != target)
-        note = (f"ordered {target.upper()} first"
-                + (f"; {held} other-adjustment candidate(s) ranked below the cut" if held else ""))
-    elif rows:
-        note = (f"no candidate's descriptor says {target.upper()} — showing what exists, "
-                f"which is how a series with no {target.upper()} copy looks")
+    out = _resolve_pool(base_descriptor, applied_transform, formula, sa_hint, freq_hint,
+                        pool_n)
+    shown, target, note = _enrich_and_order(out, base_descriptor, sa_hint, candidate_n)
     return {"description": base_descriptor,
             "sa_target": target,
             "sa_note": note,

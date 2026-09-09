@@ -679,17 +679,27 @@ else:
 
     # §16.4 — the panel resumes the work. Saving a binding and then making the operator
     # retype the request they already made is what stops a feature being used.
-    check("original_request" in _parked and "remaining_parks" in _parked,
-          "the parked result tells the model to pass the request and the park count",
+    check("original_request" in _parked,
+          "the parked result tells the model to pass the request",
           "the panel cannot quote a request it was never given")
     check("VERBATIM" in _parked or "verbatim" in _parked,
           "and insists on the request verbatim, not a paraphrase",
           "re-running the model's summary is not re-running the operator's request")
 
-    # D15: only the LAST panel resumes. Three parks resuming three times renders the
-    # chart three times, twice with slots still unresolved.
-    check("remaining_parks" in _html and "do not render anything yet" in _html,
-          "with parks outstanding the panel says keep going, not render (D15)")
+    # §16.6 — ONE panel for every park, not one panel each. D15's "only the last panel
+    # resumes" coordination is gone because there is now only ever one panel to resume
+    # from; the instruction that replaces it has to say so plainly, or the model reverts
+    # to calling the tool per slot and rebuilds the stack of panels by hand.
+    check("ONCE" in _parked and "descriptors" in _parked,
+          "the parked result says call pick_series ONCE with all parked descriptors")
+    check("enrich_page" in _parked and "belongs to the panel" in _parked,
+          "and warns the model off enrich_page, which is the panel's tool")
+    check("descriptors" in str(_inspect.signature(lane.pick_series_pages)),
+          "lane.pick_series_pages takes a LIST of descriptors")
+    _pages_src = _inspect.getsource(lane.pick_series_pages)
+    check("if i == 0" in _pages_src,
+          "only the FIRST page is enriched up front",
+          "enriching five pages costs ~102s in one call, worse than the panels it replaced")
     # D16: the panel stays live in scroll-back forever.
     check("issued" in _html and "30" in _html,
           "an old panel saves the bind but refuses to re-run it (D16)")
@@ -700,12 +710,49 @@ else:
     check("parks AGAIN" in _html and "second time" in _html,
           "the resume instruction carries its own circuit breaker",
           "park -> pick -> re-run -> park is an infinite loop with a widget in it")
+    # §16.6 — the grace period. The host mounts the frame when the tool is CALLED, so
+    # "render only when ready" has to be done from inside the panel by showing nothing.
+    check('id="panel"' in _html and 'display:none' in _html,
+          "the panel starts hidden rather than rendering an empty table",
+          "20s of 'Waiting for candidates...' is what made a working tool look broken")
+    check("GRACE_MS" in _html and 'id="boot"' in _html,
+          "a grace period, then an honest progress state if it expires",
+          "20s of a blank frame reads as broken exactly as strongly as 20s of waiting")
+
+    # Holding a page until its metadata lands, rather than painting in similarity order
+    # and re-sorting. Chosen deliberately: a list that reorders while being read is worse
+    # than one that arrives a moment later.
+    check("re-sorting under you" in _html,
+          "an unenriched tab says it is holding, and why")
+    check("enriching" in _html and "queue" in _html,
+          "the panel enriches pages ONE at a time",
+          "six concurrent metadata calls were measured to hang DLX outright")
+    _meta_src = _inspect.getsource(lane.candidate_meta)
+    check("_DLX_META_LOCK" in _meta_src,
+          "and the lane serializes DLX itself, not trusting the panel to do it",
+          "the guarantee must not depend on the caller behaving")
+    check("_meta_cache_path" in _meta_src,
+          "candidate metadata is cached on DISK, so a restart does not re-pay 20s")
+
+    # Three states, not two. Collapsing "said no" into "not looked at yet" would let Save
+    # fire on a series the operator never opened.
+    check('id="skip"' in _html and "picks[page] = null" in _html,
+          "a per-tab 'none of these' is distinct from an undecided tab")
+    check("allDecided" in _html,
+          "Save stays disabled until EVERY tab is decided")
+    check("Nothing after this one was saved" in _html,
+          "a refused binding stops the save instead of pressing on",
+          "saving three of five and resuming builds a chart nobody approved")
+
     # The escape hatch must store NOTHING: a shrug today must not become a remembered
     # decision that every future chat inherits.
-    check('id="nope"' in _html and "Do not bind anything" in _html,
+    check("do NOT guess a ticker for those" in _html and "ask me" in _html,
           "there is a way out that saves nothing (none-of-these)")
-    _nope = _html.split('id="nope"')[-1]
-    check("remember_binding" not in _nope.split("go\").addEventListener")[0],
+    # The skip handler must reach `picks`, never `remember_binding`: a tab the operator
+    # rejected has to leave no trace at all, or a shrug today becomes a decision every
+    # future chat inherits.
+    _skip = _html.split('getElementById("skip").addEventListener')[-1].split("});")[0]
+    check("remember_binding" not in _skip,
           "and the none-of-these path never calls remember_binding")
     check("key" in _html and "Stored under key" in _html,
           "the panel shows which key the bind landed under",

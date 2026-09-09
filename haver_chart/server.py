@@ -172,15 +172,17 @@ def _park_text(out: dict) -> str:
         return "\n".join(lines)
     if HTTP_ENABLED:
         lines.append(
-            "ACTION REQUIRED — this slot PARKED. Call `pick_series` now, with the SAME "
-            "base_descriptor and the same applied_transform/formula you passed here. It "
-            "shows the operator a table of candidates with source, start date, LIVE end "
-            "date and observation count, and their click records the binding for you. Do "
-            "NOT ask them to type a ticker in prose, and do NOT bind a candidate "
-            "yourself. Wait for their choice — it comes back to you as a message. "
-            "Pass `original_request` (their request VERBATIM, not your paraphrase) and "
-            "`remaining_parks` (how many slots parked in total, including this one) so "
-            "the panel can resume the work on a click without them retyping it.")
+            "ACTION REQUIRED — this slot PARKED. Finish checking EVERY other slot in the "
+            "request first, then call `pick_series` ONCE with `descriptors` listing all "
+            "the parked ones together. One call, one panel, one set of tabs, one Save — "
+            "calling it per slot produces a stack of panels each with its own wait, which "
+            "is exactly what the tabs replaced. Pass the same applied_transform/formula "
+            "you passed here, and `original_request` (their request VERBATIM, not your "
+            "paraphrase) so the panel can resume the work on a click without them "
+            "retyping it. Their Save records every binding for you. Do NOT ask them to "
+            "type a ticker in prose, do NOT bind a candidate yourself, and do NOT call "
+            "`enrich_page` — that one belongs to the panel. Wait for their choices; they "
+            "come back as a single message.")
     else:
         lines.append(
             "ACTION REQUIRED — this slot PARKED. Show the operator the candidates above "
@@ -486,22 +488,59 @@ if HTTP_ENABLED:
  .msg{margin-top:10px;padding:8px;border-radius:6px;background:#1e293b;white-space:pre-wrap}
  .err{background:#7f1d1d;color:#fee2e2}
  .ok{background:#14532d;color:#dcfce7}
+ .tabs{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:10px}
+ .tab{padding:4px 9px;border-radius:5px;font-size:12px;cursor:pointer;
+      color:#94a3b8;border:1px solid transparent;white-space:nowrap}
+ .tab:hover{color:#e2e8f0}
+ .tab.on{color:#e2e8f0;background:#1e293b;border-color:#334155}
+ .tab.got{color:#86efac}
+ .tab.on.got{color:#86efac}
+ .foot{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+ .foot .sub{margin:0 0 0 auto}
+ .bar{height:3px;background:#1e293b;border-radius:2px;margin-top:10px;overflow:hidden}
+ .barfill{height:3px;width:0%;background:#2563eb;border-radius:2px;transition:width .4s}
 </style></head>
 <body>
- <h1 id="title">Pick a series</h1>
- <div class="sub" id="why">Waiting for candidates...</div>
- <table><thead><tr>
-   <th></th><th>Ticker</th><th>Description</th><th>Source</th>
-   <th>Start</th><th>Live end</th><th>Obs</th><th>Freq</th><th>Adj</th>
- </tr></thead><tbody id="rows"></tbody></table>
- <div class="man">Not listed &mdash; enter a ticker:
-   <input type="text" id="manual" placeholder="CODE@DATABASE"></div>
- <button id="go" disabled>Save &amp; continue</button>
- <button id="nope" class="ghost">None of these &mdash; stop</button>
- <div id="msg"></div>
+ <!-- Everything lives inside #panel, which stays display:none until there is something
+      worth showing. The host mounts this frame the instant the tool is CALLED, not when
+      it returns, and that timing is the host's to decide -- so "render only when ready"
+      has to be done from in here, by reporting no height, rather than by asking the host
+      to wait. -->
+ <div id="panel" style="display:none">
+  <div id="tabs" class="tabs"></div>
+  <h1 id="title">Pick a series</h1>
+  <div class="sub" id="why"></div>
+  <div id="pagebody">
+   <table><thead><tr>
+     <th></th><th>Ticker</th><th>Description</th><th>Source</th>
+     <th>Start</th><th>Live end</th><th>Obs</th><th>Freq</th><th>Adj</th>
+   </tr></thead><tbody id="rows"></tbody></table>
+   <div class="man">Not listed &mdash; enter a ticker:
+     <input type="text" id="manual" placeholder="CODE@DATABASE"></div>
+   <div><button id="skip" class="ghost">None of these for this series</button></div>
+  </div>
+  <div id="hold" class="sub" style="display:none"></div>
+  <div class="foot">
+   <button id="go" disabled>Save &amp; continue</button>
+   <button id="next" class="ghost">Next &rarr;</button>
+   <span id="tally" class="sub"></span>
+  </div>
+  <div id="msg"></div>
+ </div>
+ <!-- Shown only if the grace period expires before candidates arrive. Twenty seconds of
+      a blank frame reads as broken exactly as strongly as twenty seconds of "Waiting". -->
+ <div id="boot" style="display:none">
+  <h1>Finding candidates</h1>
+  <div class="sub" id="bootwhy">Reading DLX metadata &mdash; this takes about 20 seconds
+   the first time for a series, and a moment after that.</div>
+  <div class="bar"><div class="barfill" id="bootbar"></div></div>
+ </div>
 <script>
 (function () {
-  var nextId = 2, pending = {}, data = null, chosen = null, done = false;
+  // picks is keyed by page index. A string is a chosen ticker, null means the operator
+  // looked and said none fit, and absent means they have not decided yet -- three states,
+  // because collapsing the last two would let Save fire on a series nobody had opened.
+  var nextId = 2, pending = {}, data = null, picks = {}, done = false;
 
   function send(m) { window.parent.postMessage(m, "*"); }
   function report() {
@@ -528,15 +567,163 @@ if HTTP_ENABLED:
     return td;
   }
 
-  function draw() {
-    var list = (data && data.candidates) || [];
-    document.getElementById("title").textContent = "Pick a series for: " + (data.description || "");
-    // The adjustment note is shown, not silent. An operator who cannot see that the list
-    // was reordered has no way to know an NSA copy exists below the cut.
-    document.getElementById("why").textContent =
-      (data.reason || "") + (data.sa_note ? " \\u2014 " + data.sa_note : "");
+  // ── paging ────────────────────────────────────────────────────────────────
+  // One panel for every parked slot, replacing one panel per slot. The old arrangement
+  // made a five-series request produce five panels, each with its own ~20s wait, and had
+  // to coordinate them by telling the model "resolve the others FIRST" -- a whole class
+  // of problem that stops existing once there is a single Save.
+  var page = 0;
+
+  function pages() { return (data && data.pages) || []; }
+  function cur() { return pages()[page] || null; }
+
+  function decided(i) {
+    // A page counts as done when a ticker is chosen OR the operator has said none fit.
+    // Skipping must be explicit: treating "untouched" as "none" would silently drop a
+    // series the operator simply had not scrolled to yet.
+    return picks[i] !== undefined;
+  }
+
+  function allDecided() {
+    var ps = pages();
+    for (var i = 0; i < ps.length; i++) { if (!decided(i)) { return false; } }
+    return ps.length > 0;
+  }
+
+  function drawTabs() {
+    var strip = document.getElementById("tabs");
+    strip.textContent = "";
+    var ps = pages();
+    if (ps.length < 2) { strip.style.display = "none"; return; }
+    strip.style.display = "flex";
+    ps.forEach(function (p, i) {
+      var el = document.createElement("div");
+      el.className = "tab" + (i === page ? " on" : "") + (decided(i) ? " got" : "");
+      var mark = decided(i) ? (picks[i] === null ? "\\u2717 " : "\\u2713 ") : (i + 1) + ". ";
+      el.textContent = mark + shortName(p.description || "");
+      el.title = p.description || "";
+      el.addEventListener("click", function () { go(i); });
+      strip.appendChild(el);
+    });
+  }
+
+  function shortName(text) {
+    // Tab labels have to fit; the full descriptor lives in the title attribute and in the
+    // heading below, so nothing is actually hidden.
+    var s = String(text || "");
+    return s.length > 26 ? s.slice(0, 25) + "\\u2026" : s;
+  }
+
+  function go(i) {
+    page = i;
+    render();
+    ensureEnriched(i);
+  }
+
+  function render() {
+    var p = cur();
+    if (!p) { return; }
+    drawTabs();
+    document.getElementById("title").textContent =
+      "Pick a series for: " + (p.description || "");
+
+    var holding = !p.enriched;
+    document.getElementById("pagebody").style.display = holding ? "none" : "";
+    document.getElementById("hold").style.display = holding ? "" : "none";
+    if (holding) {
+      // Held deliberately rather than painted in similarity order and re-sorted when the
+      // DLX data lands. Rows that reorder while being read are worse than rows that
+      // arrive a moment later.
+      document.getElementById("hold").textContent =
+        "Reading DLX metadata for " + (p.candidate_count || 0) + " candidates. "
+        + "Seasonal-adjustment ordering needs it, so the list is held until it arrives "
+        + "rather than re-sorting under you.";
+      document.getElementById("why").textContent = "";
+    } else {
+      // The adjustment note is shown, not silent. An operator who cannot see that the list
+      // was reordered has no way to know an NSA copy exists below the cut.
+      document.getElementById("why").textContent =
+        (p.reason || "") + (p.sa_note ? " \\u2014 " + p.sa_note : "");
+      drawRows(p);
+    }
+
+    var ps = pages();
+    var nextBtn = document.getElementById("next");
+    nextBtn.style.display = ps.length > 1 ? "" : "none";
+    nextBtn.disabled = page >= ps.length - 1;
+    document.getElementById("go").disabled = !allDecided() || done;
+    var n = 0;
+    for (var i = 0; i < ps.length; i++) { if (decided(i)) { n++; } }
+    document.getElementById("tally").textContent =
+      ps.length > 1 ? (n + " of " + ps.length + " decided") : "";
+    report();
+  }
+
+  // DLX is called STRICTLY one at a time. Six concurrent metadata calls were measured to
+  // hang it outright on 2026-09-09, so pages queue here as well as behind a server-side
+  // lock -- belt and braces, because either alone would be enough to be sorry about.
+  var enriching = false, queue = [];
+
+  function ensureEnriched(i) {
+    var p = pages()[i];
+    if (!p || p.enriched || queue.indexOf(i) >= 0) { return; }
+    queue.push(i);
+    pump();
+  }
+
+  function pump() {
+    if (enriching || queue.length === 0) { return; }
+    var i = queue.shift();
+    var p = pages()[i];
+    if (!p || p.enriched) { pump(); return; }
+    enriching = true;
+    request("tools/call", {name: "enrich_page",
+                           arguments: {base_descriptor: p.description,
+                                       applied_transform: data.applied_transform || "",
+                                       formula: data.formula || ""}})
+      .then(function (res) {
+        var got = (res && res.structuredContent) || null;
+        if (got) {
+          p.candidates = got.candidates || [];
+          p.sa_note = got.sa_note || "";
+          p.sa_target = got.sa_target || "";
+          p.reason = got.reason || p.reason;
+          p.enriched = true;
+        } else {
+          p.enriched = true;
+          p.reason = "Could not read metadata for this series; showing nothing rather "
+                   + "than showing it in the wrong order.";
+          p.candidates = [];
+        }
+      })
+      .catch(function (err) {
+        p.enriched = true;
+        p.candidates = [];
+        p.reason = "Could not read metadata for this series (" + err + ").";
+      })
+      .then(function () {
+        enriching = false;
+        if (i === page) { render(); } else { drawTabs(); }
+        pump();
+      });
+  }
+
+  function prefetchNext() {
+    // Enrich the page AFTER the one being read, so opening the next tab is usually
+    // instant. Only one ahead: fetching all five up front is the 101-second version.
+    var ps = pages();
+    for (var i = page + 1; i < ps.length; i++) {
+      if (!ps[i].enriched) { ensureEnriched(i); return; }
+    }
+  }
+
+  function drawRows(p) {
+    var list = p.candidates || [];
     var body = document.getElementById("rows");
     body.textContent = "";
+    var manual = document.getElementById("manual");
+    manual.value = (typeof picks[page] === "string" && !hasCode(list, picks[page]))
+                 ? picks[page] : "";
     list.forEach(function (c, i) {
       var tr = document.createElement("tr");
       tr.className = "pick";
@@ -559,30 +746,50 @@ if HTTP_ENABLED:
       cell(tr, c.obs);
       cell(tr, c.frequency);
       cell(tr, c.sa ? c.sa.toUpperCase() : "?");
+      radio.checked = (picks[page] === c.code);
       function choose() {
         radio.checked = true;
-        chosen = c.code;
+        picks[page] = c.code;
         document.getElementById("manual").value = "";
-        document.getElementById("go").disabled = false;
+        render();
       }
       tr.addEventListener("click", choose);
       radio.addEventListener("change", choose);
       body.appendChild(tr);
-      if (i === 0 && list.length === 1) { choose(); }
+      if (i === 0 && list.length === 1 && picks[page] === undefined) { choose(); }
     });
-    report();
+  }
+
+  function hasCode(list, code) {
+    for (var i = 0; i < list.length; i++) { if (list[i].code === code) { return true; } }
+    return false;
   }
 
   document.getElementById("manual").addEventListener("input", function (e) {
     var v = e.target.value.trim();
     if (v) {
-      chosen = v;
+      picks[page] = v;
       var r = document.querySelector("input[name=cand]:checked");
       if (r) { r.checked = false; }
     } else {
-      chosen = null;
+      delete picks[page];
     }
-    document.getElementById("go").disabled = !chosen;
+    render();
+  });
+
+  document.getElementById("next").addEventListener("click", function () {
+    if (page < pages().length - 1) { go(page + 1); }
+  });
+
+  document.getElementById("skip").addEventListener("click", function () {
+    // null, not undefined: "the operator looked and said no" has to be distinguishable
+    // from "the operator has not got to this one yet", or Save would unblock early.
+    picks[page] = null;
+    var r = document.querySelector("input[name=cand]:checked");
+    if (r) { r.checked = false; }
+    document.getElementById("manual").value = "";
+    var ps = pages();
+    if (page < ps.length - 1) { go(page + 1); } else { render(); }
   });
 
   function tell(text) {
@@ -623,29 +830,39 @@ if HTTP_ENABLED:
     return (Date.now() - t) / 60000;
   }
 
-  function handBack(code, key) {
-    var what = "I picked " + code + " for \\u201c" + data.description +
-               "\\u201d and it is saved.";
-    var left = (data.remaining_parks || 1) - 1;
+  function handBack(saved, refused) {
+    // ONE message for the whole panel. The old per-panel version had to suppress the
+    // re-run on every panel but the last (D15), because three panels resuming the same
+    // request rendered it three times, twice with slots still unresolved. With a single
+    // Save there is nothing to coordinate: everything is decided by the time this runs.
+    var parts = [];
+    saved.forEach(function (s) {
+      parts.push("\\u201c" + s.description + "\\u201d \\u2192 " + s.code);
+    });
+    var what = saved.length
+      ? "I picked and saved: " + parts.join("; ") + "."
+      : "I did not pick anything.";
 
-    // D15. Every panel re-running the request would render a three-park commentary three
-    // times, twice with slots still unresolved. Only the last one resumes.
-    if (left > 0) {
-      tell(what + " There are still " + left + " parked slot(s) in my request. " +
-           "Resolve those FIRST with pick_series and do not render anything yet.");
-      note(document.getElementById("msg").textContent +
-           "\\n" + left + " slot(s) still parked \\u2014 the chart runs once those are picked.", "ok");
-      return;
+    if (refused.length) {
+      what += " None of the candidates were right for "
+            + refused.map(function (d) { return "\\u201c" + d + "\\u201d"; }).join(" or ")
+            + " \\u2014 do NOT guess a ticker for those, do not retry them, and ask me "
+            + "how to proceed with them.";
     }
 
     // D16. The panel stays live in scroll-back forever, so a click on an hour-old one
     // would re-run an hour-old request as if it were current. Save it, but do not act.
     if (ageMinutes() > 30) {
-      tell(what + " Do NOT re-run anything from this old panel \\u2014 the binding is " +
-           "stored and I will ask again if I still want it.");
+      tell(what + " Do NOT re-run anything from this old panel \\u2014 the bindings are " +
+           "stored and I will ask again if I still want them.");
       note(document.getElementById("msg").textContent +
            "\\nThis panel is over 30 minutes old, so the request was not re-run. " +
            "Ask again in chat and it will bind without asking.", "ok");
+      return;
+    }
+
+    if (refused.length && !saved.length) {
+      tell(what + " Do not retry the request.");
       return;
     }
 
@@ -654,61 +871,84 @@ if HTTP_ENABLED:
       // the model to guess what it was continuing. The circuit breaker matters as much --
       // without it a save that lands under a key the next lookup misses becomes an
       // endless park / pick / re-run loop, with the panel reappearing every time.
+      var names = saved.map(function (s) { return "\\u201c" + s.description + "\\u201d"; })
+                       .join(" or ");
       tell(what + " Now re-run my original request exactly as I gave it: \\u201c" +
-           data.original_request + "\\u201d. If \\u201c" + data.description +
-           "\\u201d parks AGAIN after this, stop and tell me the save did not take" +
-           (key ? " (it was stored under key \\u201c" + key + "\\u201d)" : "") +
-           " \\u2014 do not open the picker for it a second time.");
+           data.original_request + "\\u201d. If " + names +
+           " parks AGAIN after this, stop and tell me the save did not take \\u2014 do " +
+           "not open the picker for it a second time.");
     } else {
-      tell(what + " Continue building the chart with it.");
+      tell(what + " Continue building the chart with them.");
     }
   }
 
-  document.getElementById("nope").addEventListener("click", function () {
-    if (done) { return; }
-    done = true;
-    // Stores NOTHING. An abandoned pick must leave no trace, or a shrug today becomes a
-    // remembered decision that every future chat inherits.
-    document.getElementById("go").disabled = true;
-    document.getElementById("nope").disabled = true;
-    note("Nothing saved. Telling the chat to stop and ask you.", "ok");
-    tell("None of the candidates are right for \\u201c" + data.description +
-         "\\u201d. Do not bind anything, do not guess, and do not retry the request. " +
-         "Ask me how to proceed.");
-  });
+  function saveAll() {
+    // Sequential, deliberately. Each remember_binding DLX-confirms before storing, and
+    // DLX will not take concurrent callers -- the same constraint that forces the
+    // enrichment queue.
+    var ps = pages(), saved = [], refused = [], i = 0;
+
+    function step() {
+      if (i >= ps.length) {
+        done = true;
+        var lines = saved.map(function (s) {
+          return s.code + "  \\u2190  " + s.description
+               + (s.key ? "\\n    Stored under key: " + s.key : "");
+        });
+        note("Saved " + saved.length + " binding(s)."
+             + (lines.length ? "\\n" + lines.join("\\n") : "")
+             + (refused.length ? "\\n\\nLeft unresolved: " + refused.join("; ") : ""), "ok");
+        handBack(saved, refused);
+        return;
+      }
+      var p = ps[i], choice = picks[i];
+      if (choice === null || choice === undefined) {
+        if (choice === null) { refused.push(p.description); }
+        i++; step(); return;
+      }
+      note("Confirming " + choice + " for \\u201c" + p.description + "\\u201d against DLX"
+           + " (" + (i + 1) + " of " + ps.length + ")...");
+      // remember_binding DLX-confirms before it stores, so a typed ticker cannot poison
+      // the store. Its refusal is the useful answer, which is why the error is shown here
+      // rather than swallowed.
+      request("tools/call", {name: "remember_binding",
+                             arguments: {base_descriptor: p.description,
+                                         code_at_db: choice}})
+        .then(function (res) {
+          if (res && res.isError) {
+            var why = "";
+            try { why = res.content.map(function (b) { return b.text || ""; }).join(" "); }
+            catch (e) { why = "DLX would not confirm it."; }
+            // Stop on the FIRST refusal rather than pressing on. Saving three of five and
+            // resuming would build a chart the operator never approved.
+            note("\\u201c" + p.description + "\\u201d: " +
+                 (why || "DLX would not confirm that ticker.") +
+                 "\\nNothing after this one was saved. Fix that row and press Save again.",
+                 "err");
+            page = i; render();
+            document.getElementById("go").disabled = false;
+            return;
+          }
+          // The key is shown because a save landing under a key the next lookup misses is
+          // the one failure mode that looks exactly like success (measured 2026-09-08,
+          // when an HTML-escaped descriptor made a stored binding unreachable forever).
+          var key = "";
+          try { key = (res.structuredContent || {}).key || ""; } catch (e) { key = ""; }
+          saved.push({description: p.description, code: choice, key: key});
+          i++; step();
+        })
+        .catch(function (err) {
+          note("Could not save \\u201c" + p.description + "\\u201d: " + err, "err");
+          document.getElementById("go").disabled = false;
+        });
+    }
+    step();
+  }
 
   document.getElementById("go").addEventListener("click", function () {
-    if (!chosen || done) { return; }
+    if (done || !allDecided()) { return; }
     document.getElementById("go").disabled = true;
-    note("Confirming " + chosen + " against DLX...");
-    // remember_binding DLX-confirms before it stores, so a typed ticker cannot poison
-    // the store. Its refusal is the useful answer, which is why the error is shown here
-    // rather than swallowed.
-    request("tools/call", {name: "remember_binding",
-                           arguments: {base_descriptor: data.description,
-                                       code_at_db: chosen}})
-      .then(function (res) {
-        var failed = res && res.isError;
-        if (failed) {
-          var why = "";
-          try { why = res.content.map(function (b) { return b.text || ""; }).join(" "); }
-          catch (e) { why = "DLX would not confirm it."; }
-          note(why || "DLX would not confirm that ticker.", "err");
-          document.getElementById("go").disabled = false;
-          return;
-        }
-        done = true;
-        var key = "";
-        try { key = (res.structuredContent || {}).key || ""; } catch (e) { key = ""; }
-        note("Saved. " + chosen + " is now bound to \\u201c" + data.description +
-             "\\u201d and will not be asked again." +
-             (key ? "\\nStored under key: " + key : ""), "ok");
-        handBack(chosen, key);
-      })
-      .catch(function (err) {
-        note("Could not save: " + err, "err");
-        document.getElementById("go").disabled = false;
-      });
+    saveAll();
   });
 
   window.addEventListener("message", function (e) {
@@ -725,11 +965,66 @@ if HTTP_ENABLED:
     }
     if (d.method === "ui/notifications/tool-result") {
       var p = d.params || {};
-      data = p.structuredContent || null;
-      if (data) { draw(); }
-      else { note("No candidate data arrived with the tool result.", "err"); }
+      var got = p.structuredContent || null;
+      if (!got) {
+        showBoot(true);
+        document.getElementById("bootwhy").textContent =
+          "No candidate data arrived with the tool result.";
+        return;
+      }
+      // Accept the single-descriptor shape too. A panel already sitting in scroll-back
+      // from before this change still has to render if the operator clicks it.
+      data = got.pages ? got : {pages: [{description: got.description || "",
+                                         status: got.status,
+                                         resolved: got.resolved,
+                                         reason: got.reason || "",
+                                         sa_note: got.sa_note || "",
+                                         sa_target: got.sa_target || "",
+                                         candidate_count: (got.candidates || []).length,
+                                         enriched: true,
+                                         candidates: got.candidates || []}],
+                                original_request: got.original_request || "",
+                                applied_transform: got.applied_transform || "",
+                                formula: got.formula || "",
+                                issued: got.issued};
+      arrived = true;
+      showBoot(false);
+      document.getElementById("panel").style.display = "";
+      page = 0;
+      render();
+      prefetchNext();
     }
   });
+
+  // ── the grace period ──────────────────────────────────────────────────────
+  // Nothing is shown at all for GRACE_MS. If candidates land inside it the panel simply
+  // appears, complete, and the wait was never visible -- which is the "render only when
+  // ready" behaviour, achieved from this side because the host decides when to mount the
+  // frame and it mounts on the CALL, not the result.
+  //
+  // If the grace period expires we expand into an honest progress state rather than
+  // leaving a blank space, because 20 seconds of nothing reads as broken every bit as
+  // strongly as 20 seconds of "Waiting for candidates...".
+  var GRACE_MS = 1400, arrived = false, t0 = Date.now();
+
+  function showBoot(on) {
+    document.getElementById("boot").style.display = on ? "" : "none";
+    report();
+  }
+
+  setTimeout(function () { if (!arrived) { showBoot(true); tick(); } }, GRACE_MS);
+
+  function tick() {
+    if (arrived) { return; }
+    // Deliberately asymptotic: it approaches 90% and never reaches it, because the
+    // honest thing to say is "still working", and a bar that hits 100% and sits there is
+    // a lie the operator only has to catch once.
+    var secs = (Date.now() - t0) / 1000;
+    var pct = Math.min(90, 100 * (1 - Math.exp(-secs / 9)));
+    document.getElementById("bootbar").style.width = pct.toFixed(0) + "%";
+    report();
+    setTimeout(tick, 700);
+  }
 
   send({jsonrpc: "2.0", id: 1, method: "ui/initialize",
         params: {protocolVersion: "2026-01-26",
@@ -749,53 +1044,82 @@ if HTTP_ENABLED:
 
     @mcp.tool(app=AppConfig(resource_uri=_PICKER_URI, visibility=["app", "model"]),
               meta={"ui/resourceUri": _PICKER_URI})
-    def pick_series(ctx: Context, base_descriptor: str, applied_transform: str = "",
+    def pick_series(ctx: Context, descriptors: list[str], applied_transform: str = "",
                     formula: str = "", sa_hint: str = "", freq_hint: str = "",
-                    original_request: str = "",
-                    remaining_parks: int = 1) -> ToolResult:
-        """Show the operator a table of candidates for a PARKED series, so they can choose.
+                    original_request: str = "") -> ToolResult:
+        """Show the operator ONE panel holding EVERY parked series, so they choose once.
 
-        Call this ONLY when `resolve_series` parked a slot. A resolved slot has nothing to
-        pick, and a panel offering a choice that was already made is noise.
+        Call this ONCE per request, with EVERY parked slot in `descriptors` — not once per
+        slot. A five-series request means one call with five descriptors, which renders as
+        five tabs in a single panel with a single Save. Calling it repeatedly produces a
+        stack of panels, each with its own wait, which is what this replaced.
 
-        The operator's click records the binding itself, through `remember_binding`, so the
-        answer survives to later chats. You do not need to call `remember_binding`
-        afterwards — wait for their selection to come back as a message, then carry on with
-        `render_chart`.
+        Call it only when `resolve_series` actually parked something. A resolved slot has
+        nothing to pick, and a panel offering a choice that was already made is noise.
 
-        ALWAYS pass these two, or the panel cannot hand the thread back properly:
+        The operator's Save records every binding itself, through `remember_binding`, so
+        the answers survive to later chats. Do not call `remember_binding` yourself — wait
+        for their selection to come back as a message, then carry on with `render_chart`.
 
-        * `original_request` — the operator's request VERBATIM, as they typed it. The
-          panel quotes it back so the work resumes on a click instead of making them
-          retype what they already asked for. Paraphrasing defeats it: a re-run of your
-          summary is not a re-run of their request.
-        * `remaining_parks` — how many slots are parked in total, INCLUDING this one. With
-          three parks, three panels each resuming the request would render the chart three
-          times, twice with slots still unresolved. Pass the real count and only the last
-          panel resumes.
+        ALWAYS pass `original_request`: the operator's request VERBATIM, as they typed it.
+        The panel quotes it back so the work resumes on a click instead of making them
+        retype what they already asked for. Paraphrasing defeats it — a re-run of your
+        summary is not a re-run of their request.
 
         Columns are the ones that settle a choice by eye: who publishes it, when it starts,
         the LIVE end date (a stale one is how a discontinued series announces itself),
-        observation count and frequency.
+        observation count and frequency. Only the first tab is enriched before the panel
+        appears; the rest load as they are opened, because enriching five up front costs
+        about 100 seconds.
         """
-        out = lane.pick_series(base_descriptor, applied_transform, formula,
-                               sa_hint, freq_hint,
-                               original_request=original_request,
-                               remaining_parks=remaining_parks)
-        n = len(out.get("candidates") or [])
-        if out.get("status") == "resolved":
-            summary = (f"{base_descriptor!r} did not need a choice — it resolved to "
-                       f"{out.get('resolved')}. No panel shown; carry on.")
+        # A model that passes a bare string instead of a list should get a panel, not a
+        # type error -- this tool is called under instruction, and the instruction is the
+        # part most likely to be misread.
+        if isinstance(descriptors, str):
+            descriptors = [descriptors]
+        out = lane.pick_series_pages(list(descriptors or []), applied_transform, formula,
+                                     sa_hint, freq_hint,
+                                     original_request=original_request)
+        pages = out.get("pages") or []
+        parked = [p for p in pages if p.get("status") != "resolved"]
+        if not parked:
+            summary = ("None of those needed a choice — they all resolved. No panel "
+                       "shown; carry on.")
         else:
-            summary = (f"Showing {n} candidate(s) for {base_descriptor!r} in a picker "
-                       f"panel. WAIT for the operator to choose — their selection comes "
-                       f"back as a message and is recorded for you. Do not guess a "
-                       f"ticker and do not call remember_binding yourself.")
+            names = ", ".join(repr(p.get("description")) for p in pages)
+            summary = (f"Showing one picker panel with {len(pages)} tab(s): {names}. "
+                       f"WAIT for the operator to work through the tabs and press Save — "
+                       f"their selections come back as a single message and are recorded "
+                       f"for you. Do not guess a ticker, do not call remember_binding "
+                       f"yourself, and do not open another picker for these.")
         # Text mirrors the instruction for the same reason as `_result_text` (G20a): a
         # client that forwards only `content` would otherwise leave the model with a panel
         # it cannot see and no idea that waiting is the correct behaviour.
         return ToolResult(content=[TextContent(type="text", text=summary)],
                           structured_content=out)
+
+    @mcp.tool(visibility=["app"])
+    def enrich_page(base_descriptor: str, applied_transform: str = "",
+                    formula: str = "", sa_hint: str = "",
+                    freq_hint: str = "") -> ToolResult:
+        """Metadata and SA ordering for ONE tab of the picker panel. Called BY the panel.
+
+        `visibility=["app"]` because no model should ever call this: it is the second half
+        of `pick_series`, split off so a five-tab panel does not spend ~100 seconds
+        enriching tabs nobody has opened yet. The panel requests a tab's rows when that tab
+        is opened, and prefetches one ahead.
+
+        Serialized against DLX inside the lane. Six concurrent metadata calls were measured
+        to hang DLX outright (plan §16.6), so this must never run two at a time even if a
+        panel asks it to.
+        """
+        out = lane.enrich_page(base_descriptor, applied_transform, formula,
+                               sa_hint, freq_hint)
+        n = len(out.get("candidates") or [])
+        return ToolResult(
+            content=[TextContent(type="text",
+                                 text=f"{n} candidate(s) for {base_descriptor!r}.")],
+            structured_content=out)
 
 
 if __name__ == "__main__":
