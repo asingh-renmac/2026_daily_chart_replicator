@@ -791,16 +791,22 @@ else:
     # fired while auto-binding, so a parked panel offered five NSA copies of a series
     # whose SA copy sat two ranks below the cut.
     import inspect as _inspect
+    # The ordering itself now lives in `_enrich_and_order`, shared by the single-series
+    # path and every tab of the batched panel — one implementation, so a tab cannot end up
+    # ordered differently from the panel it sits in.
     _pick_src = _inspect.getsource(lane.pick_series)
+    _order_src = _inspect.getsource(lane._enrich_and_order)
     check('"sa_target"' in _pick_src and '"sa_note"' in _pick_src,
           "pick_series reports which adjustment it ordered for, and says so",
           "an operator cannot see a reordering they are not told about")
-    check("sa_requested" in _pick_src and "_sa_of_descriptor" in _pick_src,
+    check("sa_requested" in _order_src and "_sa_of_descriptor" in _order_src,
           "and it reuses D14's rule rather than inventing a second one")
-    check("candidate_n * 3" in _pick_src,
-          "the candidate pool is widened BEFORE re-ranking",
+    check("candidate_n * 3" in _pick_src
+          and "candidate_n * 3" in _inspect.getsource(lane.enrich_page)
+          and "candidate_n * 3" in _inspect.getsource(lane.pick_series_pages),
+          "the candidate pool is widened BEFORE re-ranking, on every path",
           "re-ranking only the visible N cannot surface an SA copy ranked below it")
-    check('tiers = {target: 0, "": 1}' in _pick_src,
+    check('tiers = {target: 0, "": 1}' in _order_src,
           "untagged descriptors rank above the opposite adjustment, not below it",
           "a hard filter would hide a series whose descriptor carries no SA tag at all")
     check("<th>Adj</th>" in _html,
