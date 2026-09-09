@@ -15,6 +15,7 @@ lane) without an MCP client in the loop.
 
 from __future__ import annotations
 
+import html as _html
 import os
 import re
 import shutil
@@ -218,6 +219,23 @@ def _dlx_verify(slot: dict) -> dict:
     return slot
 
 
+def _clean_descriptor(text: str) -> str:
+    """Undo HTML escaping in a descriptor the model handed us.
+
+    Measured 2026-09-08: a pick arrived as `CPI-U: Commodities Less Food &amp; Energy
+    Commodities` and was STORED under the key `... food &amp; energy commodities`. Every
+    later lookup spells that `&`, so the binding was unreachable the moment it was
+    written — the operator answers the question and is asked it again forever.
+
+    Fixed at the boundary rather than in `_norm_key`, which is frozen on purpose: every
+    text-keyed store on disk is filed under that exact function, so relaxing it there
+    would orphan legitimate entries to fix corrupt ones. Cleaning the input instead means
+    the descriptor is right everywhere downstream — key, stored copy, and panel title,
+    which was also rendering the entity literally.
+    """
+    return _html.unescape(text or "").strip()
+
+
 def _candidates(slot: dict, n: int = 3) -> list[dict]:
     """Top-N candidates with their scores, for the operator to choose from on a park.
 
@@ -239,6 +257,7 @@ def resolve_one(base_descriptor: str, applied_transform: str = "", formula: str 
                 lag: str = "", plot_kind: str = "line", candidate_n: int = 3) -> dict:
     """Resolve ONE series through the daily lane's resolver. A park is a normal return."""
     kind = _plot_kind(plot_kind, "resolve_series")
+    base_descriptor = _clean_descriptor(base_descriptor)
     spec = {"description": base_descriptor, "base_descriptor": base_descriptor,
             "applied_transform": applied_transform, "formula": formula,
             "sa_hint": sa_hint or "unknown", "freq_hint": freq_hint or "unknown",
@@ -318,31 +337,66 @@ def pick_series(base_descriptor: str, applied_transform: str = "", formula: str 
     firing three times on a three-park request and rendering three partial charts: only
     the LAST panel re-runs, the earlier ones say "keep going".
 
+    Candidates are ordered by SEASONAL ADJUSTMENT first, similarity second (D18). D14
+    already said "seasonally adjusted unless the read asks for raw", but it only ever
+    fired on the auto-bind path — the parked list stayed in pure similarity order, so the
+    panel would offer five NSA copies of a series whose SA copy existed two ranks lower
+    and the operator had to ask for SA by name. Momentum commentary wants SA; an NSA line
+    answers a different question than the words asked.
+
     Read-only. Nothing here writes to a store; `remember_binding` does that, after the
     operator has actually chosen.
     """
+    base_descriptor = _clean_descriptor(base_descriptor)
+    # Widened, then re-ranked and trimmed. Re-ranking the visible N cannot surface an SA
+    # copy that similarity ranked below it, which was the whole defect. Metadata is the
+    # only place SA status lives (Haver.metadata has no SA field — it is the descriptor's
+    # units parenthetical), so the pool has to be fetched before it can be ordered.
+    pool_n = max(candidate_n * 3, 12)
     out = resolve_one(base_descriptor, applied_transform, formula, sa_hint, freq_hint,
-                      candidate_n=candidate_n)
+                      candidate_n=pool_n)
     rows = []
     for cand in out.get("candidates") or []:
         code = cand.get("code") or ""
         with quiet_stdout():
             meta = R.haver_metadata(code) or {}
+        descriptor = str(meta.get("descriptor") or cand.get("descriptor") or "")
+        tag = R._sa_of_descriptor(descriptor)
         rows.append({
             "code": code,
             # DLX's descriptor when we have it: it carries the units parenthetical that
             # says SA or NSA, which the catalog's copy can lack.
-            "descriptor": str(meta.get("descriptor") or cand.get("descriptor") or ""),
+            "descriptor": descriptor,
             "database": code.split("@")[-1] if "@" in code else "",
             "source": str(meta.get("shortsource") or ""),
             "start": str(meta.get("startdate") or ""),
             "end": str(meta.get("enddate") or ""),
             "obs": str(meta.get("numobs") or ""),
             "frequency": str(meta.get("frequency") or ""),
+            "sa": "sa" if tag == "saar" else tag,
             "exact": bool(cand.get("exact_token_match")),
             "similarity": cand.get("similarity"),
         })
+
+    want = R.sa_requested({"sa_hint": sa_hint, "base_descriptor": base_descriptor})
+    target = want or "sa"                                   # D14's default, applied here too
+    # THREE tiers, not a filter. A hard filter on the target would hide a series whose
+    # descriptor simply carries no SA tag at all, and an untagged descriptor is unknown,
+    # not wrong — hiding the only viable answer is worse than showing it last.
+    tiers = {target: 0, "": 1}
+    rows.sort(key=lambda r: (tiers.get(r["sa"], 2), -(r["similarity"] or 0.0)))
+    shown, hidden = rows[:candidate_n], rows[candidate_n:]
+    note = ""
+    if any(r["sa"] == target for r in shown):
+        held = sum(1 for r in hidden if r["sa"] != target)
+        note = (f"ordered {target.upper()} first"
+                + (f"; {held} other-adjustment candidate(s) ranked below the cut" if held else ""))
+    elif rows:
+        note = (f"no candidate's descriptor says {target.upper()} — showing what exists, "
+                f"which is how a series with no {target.upper()} copy looks")
     return {"description": base_descriptor,
+            "sa_target": target,
+            "sa_note": note,
             "status": out.get("status"),
             "resolved": out.get("resolved"),
             "reason": out.get("reason") or "",
@@ -354,7 +408,7 @@ def pick_series(base_descriptor: str, applied_transform: str = "", formula: str 
             # scroll-back is still fully live HTML, so a click on a panel from an hour ago
             # would otherwise re-run an hour-old request as if it were fresh (D16).
             "issued": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            "candidates": rows}
+            "candidates": shown}
 
 
 # ──────────────────────────────── rendering ─────────────────────────────────
@@ -370,6 +424,7 @@ def remember_binding(base_descriptor: str, code_at_db: str,
     why `forget_binding` exists (D4).
     """
     code = (code_at_db or "").strip()
+    base_descriptor = _clean_descriptor(base_descriptor)
     if "@" not in code:
         raise ValueError(f"expected a code@database, got {code_at_db!r}")
     if not (base_descriptor or "").strip():
@@ -392,6 +447,7 @@ def remember_binding(base_descriptor: str, code_at_db: str,
 def forget_binding(base_descriptor: str) -> dict:
     """Remove one remembered binding (D4), so a wrong answer is revocable without
     hand-editing JSON on a network share."""
+    base_descriptor = _clean_descriptor(base_descriptor)
     removed = CHAT.forget(base_descriptor)
     return {"removed": removed, "operator": CHAT.operator_identity()[0],
             "description": base_descriptor, "store": str(CHAT.store_path()),

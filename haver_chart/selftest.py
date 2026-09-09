@@ -711,6 +711,54 @@ else:
           "the panel shows which key the bind landed under",
           "a save under an unreachable key is the one failure that looks like success")
 
+    # §16.5 — the follow-up must not fail silently. Measured 2026-09-08: Save & continue
+    # saved the bind and did nothing else, and there was no way to tell a host that
+    # DECLINED ui/message from one that never got it.
+    check('request("ui/message"' in _html,
+          "ui/message is sent as an awaited REQUEST, not fire-and-forget",
+          "HostCapabilities has no flag for it, so the response is the only evidence")
+    check("would not accept the follow-up" in _html,
+          "a host that refuses the follow-up says so in the panel")
+    check(_html.count('request("ui/message"') >= 2,
+          "and the content shape is retried as an array",
+          "the spec says object; shipped hosts differ, and this client already needed a "
+          "deprecated key to render at all")
+
+    # §16.5 — HTML-escaped descriptors. A pick arrived as `Food &amp; Energy` and was
+    # stored under a key no later lookup could ever spell, so the answer was lost the
+    # moment it was given.
+    check(lane._clean_descriptor("CPI-U: Commodities Less Food &amp; Energy") ==
+          "CPI-U: Commodities Less Food & Energy",
+          "an HTML-escaped descriptor is cleaned at the boundary",
+          "otherwise the bind is filed under a key that can never be looked up")
+    check(lane._clean_descriptor("Retail Sales & Food Services") ==
+          "Retail Sales & Food Services",
+          "and an already-clean descriptor is untouched")
+    check(R._norm_key(lane._clean_descriptor("Food &amp; Energy")) ==
+          R._norm_key("food & energy"),
+          "so the escaped and plain spellings reach the SAME store key",
+          "which is the property that makes the answer findable again")
+
+    # D18 — SA first in the PARKED list, not just on the auto-bind path. D14 only ever
+    # fired while auto-binding, so a parked panel offered five NSA copies of a series
+    # whose SA copy sat two ranks below the cut.
+    import inspect as _inspect
+    _pick_src = _inspect.getsource(lane.pick_series)
+    check('"sa_target"' in _pick_src and '"sa_note"' in _pick_src,
+          "pick_series reports which adjustment it ordered for, and says so",
+          "an operator cannot see a reordering they are not told about")
+    check("sa_requested" in _pick_src and "_sa_of_descriptor" in _pick_src,
+          "and it reuses D14's rule rather than inventing a second one")
+    check("candidate_n * 3" in _pick_src,
+          "the candidate pool is widened BEFORE re-ranking",
+          "re-ranking only the visible N cannot surface an SA copy ranked below it")
+    check('tiers = {target: 0, "": 1}' in _pick_src,
+          "untagged descriptors rank above the opposite adjustment, not below it",
+          "a hard filter would hide a series whose descriptor carries no SA tag at all")
+    check("<th>Adj</th>" in _html,
+          "the panel has an adjustment column",
+          "SA vs NSA was invisible except inside the descriptor text")
+
 # ── 14. /health reports the DLX session, not just render liveness ───────────────
 # The data lane refused every pull from 2026-09-04 to 09-08 and its /health said so the
 # whole time. The chart lane, on the SAME DLX install, published nothing about the

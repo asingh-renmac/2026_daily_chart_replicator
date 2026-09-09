@@ -2987,3 +2987,60 @@ Two failure modes got explicit guards rather than good intentions:
 
 Locked by selftest §13 (fourteen new checks, 114/114 total), including that the
 none-of-these path never reaches `remember_binding`.
+
+### 16.5 Three defects the first live use of the picker exposed (2026-09-08)
+
+The panel worked. Everything around it was wrong in ways only live use would show.
+
+**The follow-up was posted into a void.** "Save & continue" saved the binding and did
+nothing else. `tell()` sent `ui/message` with a request id but registered no pending
+handler, so the host's response — *error included* — was discarded. The method name is
+right (it is in the MCP Apps spec, and the sequence diagram shows the host answering it),
+so the open question was whether this client honours it, and nothing in the protocol lets
+us ask: `HostCapabilities` advertises `openLinks`, `serverTools`, `serverResources`,
+`logging` and sandbox permissions, and has **no flag for `ui/message`**. Sending it and
+reading the reply is the only available evidence.
+
+So the panel now awaits it, and a refusal is stated in the panel — the binding is saved,
+so the operator is one sentence away from finishing by hand, but only if they are told. It
+also retries with `content` as an array after an object fails: the spec says object, hosts
+differ, and this client already needed the deprecated flat `ui/resourceUri` key to render
+at all, so it has form.
+
+**A descriptor arrived HTML-escaped and was filed where nobody can look.** The pick came
+in as `CPI-U: Commodities Less Food &amp; Energy Commodities` and stored under the key
+`... food &amp; energy commodities`. Every later lookup spells that `&`, so the answer was
+unreachable the instant it was given — the operator resolves the series and is asked again
+forever. Precisely the D17 failure that "looks exactly like success", and it was the
+key-display line added for D17 that made it visible.
+
+Cleaned at the boundary, not in `_norm_key`. That function is frozen on purpose: every
+text-keyed store on disk is filed under it, so relaxing it there would orphan legitimate
+entries in order to fix corrupt ones. Cleaning the input instead fixes the key, the stored
+copy, and the panel title, which was rendering the entity literally.
+
+**D18 — the parked list orders by adjustment first, similarity second.** D14 ("seasonally
+adjusted unless the read asks for raw") only ever fired on the auto-bind path. A parked
+panel was pure similarity order, so it would offer five NSA copies of a series whose SA
+copy sat below the cut, and the operator had to ask for SA by name — for momentum
+commentary, the wrong default, since an NSA line answers a different question than the
+words asked.
+
+Two details carry it:
+
+* **The pool is widened before re-ranking** (`3 x candidate_n`, floor 12). Re-ranking only
+  the visible five cannot surface an SA copy that similarity ranked sixth, which was the
+  entire defect. SA status lives nowhere but the descriptor's units parenthetical, so the
+  pool must be fetched to be ordered.
+* **Three tiers, not a filter:** target adjustment, then *untagged*, then the opposite. An
+  untagged descriptor is unknown, not wrong, and a hard filter on SA would hide a series
+  that simply carries no tag — hiding the only viable answer is worse than ranking it
+  last. When no candidate matches, the panel says so rather than pretending, because that
+  is also how a series with no SA copy legitimately looks.
+
+Measured on the query that prompted this: `CPI-U: Commodities Less Food & Energy
+Commodities` now holds 10 other-adjustment candidates below the cut, and the panel shows
+an `Adj` column plus a note naming the reordering — an operator who cannot see that the
+list was reordered has no way to know an NSA copy exists at all.
+
+Locked by selftest §13 (eleven further checks, 125/125 total).

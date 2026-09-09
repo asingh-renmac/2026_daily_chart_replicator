@@ -484,7 +484,7 @@ if HTTP_ENABLED:
  <div class="sub" id="why">Waiting for candidates...</div>
  <table><thead><tr>
    <th></th><th>Ticker</th><th>Description</th><th>Source</th>
-   <th>Start</th><th>Live end</th><th>Obs</th><th>Freq</th>
+   <th>Start</th><th>Live end</th><th>Obs</th><th>Freq</th><th>Adj</th>
  </tr></thead><tbody id="rows"></tbody></table>
  <div class="man">Not listed &mdash; enter a ticker:
    <input type="text" id="manual" placeholder="CODE@DATABASE"></div>
@@ -523,7 +523,10 @@ if HTTP_ENABLED:
   function draw() {
     var list = (data && data.candidates) || [];
     document.getElementById("title").textContent = "Pick a series for: " + (data.description || "");
-    document.getElementById("why").textContent = data.reason || "";
+    // The adjustment note is shown, not silent. An operator who cannot see that the list
+    // was reordered has no way to know an NSA copy exists below the cut.
+    document.getElementById("why").textContent =
+      (data.reason || "") + (data.sa_note ? " \\u2014 " + data.sa_note : "");
     var body = document.getElementById("rows");
     body.textContent = "";
     list.forEach(function (c, i) {
@@ -547,6 +550,7 @@ if HTTP_ENABLED:
       cell(tr, c.end);
       cell(tr, c.obs);
       cell(tr, c.frequency);
+      cell(tr, c.sa ? c.sa.toUpperCase() : "?");
       function choose() {
         radio.checked = true;
         chosen = c.code;
@@ -574,9 +578,32 @@ if HTTP_ENABLED:
   });
 
   function tell(text) {
-    // `role: user` because it carries the OPERATOR's decision, not the server's opinion.
-    send({jsonrpc: "2.0", id: nextId++, method: "ui/message",
-          params: {role: "user", content: {type: "text", text: text}}});
+    // A REQUEST, awaited -- not fire-and-forget. This was sent with an id and no pending
+    // handler, so the host's response, error included, went in the bin. When Save &
+    // continue did nothing on 2026-09-08 there was no way to tell a host that had
+    // declined ui/message from one that had never received it. Nothing about ui/message
+    // support is discoverable up front either: HostCapabilities has no flag for it, so
+    // sending it and reading the answer is the ONLY way to know.
+    //
+    // The content shape is retried as an array on failure. The spec says an object, but
+    // shipped hosts differ, and this particular client already needed the deprecated
+    // flat `ui/resourceUri` key to render at all -- so it has form.
+    return request("ui/message",
+                   {role: "user", content: {type: "text", text: text}})
+      .catch(function () {
+        return request("ui/message",
+                       {role: "user", content: [{type: "text", text: text}]});
+      })
+      .then(function () { return true; })
+      .catch(function (err) {
+        // Say so IN the panel. The binding is already saved, so the operator is one
+        // sentence away from finishing by hand -- but only if they are told.
+        note(document.getElementById("msg").textContent +
+             "\\n\\nThis chat client would not accept the follow-up (" + err + "), so " +
+             "the request was not re-run. The binding IS saved: ask again in chat and it " +
+             "will bind without showing this panel.", "err");
+        return false;
+      });
   }
 
   function ageMinutes() {
