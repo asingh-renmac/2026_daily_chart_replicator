@@ -3364,3 +3364,37 @@ Three of the diagnostics written today were themselves broken by the same Strict
 in two forms: `.Count` on a pipeline that yields a single object, and `.Property` on an
 object that lacks it. Both throw only in the case the code was written to detect. A
 diagnostic is code that runs once, in an emergency, and these ones failed exactly then.
+
+### 18.8 Proven: 3h48m and a human, down to 64 seconds and nobody
+
+Auto-logon configured via the LSA secret, then a deliberate reboot at 08:48:35 with an
+explicit instruction not to reconnect — an RDP sign-in would have reproduced the morning's
+recovery and made a failure look like a pass.
+
+| | 2026-09-09 03:35 (patch reboot) | 2026-09-09 08:49 (test) |
+|---|---|---|
+| Session | never returned | `madz`, **console session 1**, 08:49 |
+| Lanes up | 07:18:03, after a human signed in | **08:49:56 – 08:50:07** |
+| Recovery | **3h48m**, required RDP | **~64 seconds**, nobody touched it |
+
+`query user` reports `console`, not `rdp-tcp` — the distinction that makes this a result
+rather than an anecdote. Both lanes answered `HTTP 200` through the tunnel, and a pull
+issued into that never-connected session returned `LR@USECON`, 8 observations to
+2026-08-31, with no DLX process anywhere. Every store survived: `chat_learned.asingh.json`
+still 5,570 bytes at its 07:32 write. The empty store in the `/health` payload is an
+artifact of probing anonymously — stores are per-operator and the unauthenticated caller
+is `local`.
+
+**The monitoring loop watching the reboot was itself broken, and this is the lesson worth
+keeping.** It reported "host unreachable (rebooting)" every 18 seconds for fifteen
+minutes. The host was back at 08:49. The probe sent `.ToString(\"HH:mm:ss\")` through
+bash into PowerShell, where `\"` is not an escape — PowerShell escapes with a backtick —
+so the string terminated early and the command was a syntax error. The loop read empty
+output as a dead host.
+
+That is the fourth instance today of one failure mode: **a diagnostic that cannot tell
+"my probe is broken" from "the thing I am measuring is broken", and defaults to the more
+alarming reading.** It cost fifteen minutes of believing a successful test had failed. The
+fix in every case is the same — make the probe prove it ran, rather than inferring from
+silence. `curl` against the public endpoints, which needed no quoting at all, gave the
+right answer in one call.
