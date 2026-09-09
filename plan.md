@@ -3427,3 +3427,119 @@ Retimed in place rather than re-registered, because re-creating a task is how an
 `madz / Interactive / Highest`, which is what lets it reach DLX at all. The installer
 default and `SERVER_SETUP.md` were changed too, so a redeploy cannot silently restore
 03:30.
+
+## 19. The picker's 20-second stare, and one panel for five parked slots (2026-09-09)
+
+Two complaints from the operator, one root cause underneath both.
+
+### 19.1 What the panel was actually doing
+
+The picker rendered, said "Waiting for candidates...", and sat there. Measured rather
+than estimated (`scripts/time_pick_series.py`, against five real descriptors):
+
+| | cold | warm (same process) |
+|---|---|---|
+| PPI final demand less foods, energy, trade services | 21.51s | 2.45s |
+| Redbook same store sales | 20.43s | 1.96s |
+| IP chemicals | 21.96s | 6.93s |
+| CPI services less medical care | 23.31s | 3.45s |
+| Retail sales ex autos, building materials, gas | 14.64s | 3.31s |
+
+Median 20.4s. `pick_series`'s own docstring said "~200 ms per candidate", off by roughly
+8x — the real figure is ~1.7s, twelve times, serially, because the pool is widened to 12
+for the D18 seasonal-adjustment ordering and SA status only exists in DLX's descriptor.
+A wrong constant in a comment is how twenty seconds of dead air passed for acceptable
+for as long as it did.
+
+### 19.2 The fix that is not available
+
+Fetching the twelve concurrently is the obvious lever, and it **hangs DLX**. Six threads
+returned four results in 0.63s each and then wedged; the process needed killing after
+300s (`scripts/time_metadata.py`). DLX is a desktop application underneath and does not
+tolerate concurrent callers. The live lanes survived and DLX was verified healthy
+afterwards, but the reading is unambiguous: metadata fetching stays serial.
+
+That single result shaped everything below. It is also now enforced in two places rather
+than one — `_DLX_META_LOCK` in the lane, and a queue in the panel — because the panel
+asking politely is not a guarantee, and the lane must hold even when a future caller
+does not.
+
+### 19.3 The levers that ARE available
+
+Never fetch the same code twice, and never fetch a page nobody opened.
+
+`candidate_meta` now caches to `knowledge/metadata_cache.json` with a 24-hour TTL, chosen
+for the one field that moves: `end`, the live end date, is how a discontinued series
+announces itself, and a day of staleness cannot hide something measured in years.
+
+The first version of that cache **never wrote a byte**. DLX returns `datetimemod` as a
+real datetime, `json.dumps` raised TypeError on every record, and the `except Exception:
+pass` swallowed it — so the probe reported `entries=0` on two consecutive runs and the
+20-second wait never moved. The guard that was supposed to make an unwritable cache
+harmless instead made a broken cache invisible. It now warns once per process to stderr:
+slow is acceptable, silent is not.
+
+### 19.4 One panel, tabs, one Save
+
+Five parked slots used to mean five `pick_series` calls and five panels, each with its
+own ~20s wait, coordinated by telling the model "resolve the others FIRST and do not
+render anything yet" (D15) so only the last panel resumed the request. `pick_series` now
+takes a LIST and renders one panel with a tab per slot, one Save, one hand-back — and
+D15's coordination simply stops existing, because there is only ever one panel.
+
+Enrichment is per-tab. Enriching five up front is ~102s in a single tool call, slower
+than the thing it replaces; and resolving all five up front adds ~4s each before the
+first tab's metadata even starts. So the batch call resolves and enriches page one only,
+and `enrich_page` (app-only, never offered to the model) does the rest as tabs open, one
+ahead of the operator.
+
+Measured end to end (`scripts/time_picker_pages.py`):
+
+| | time to first panel | all five |
+|---|---|---|
+| five separate panels (before) | ~20s, then 4 more waits | 101.85s |
+| tabs, cold cache | 20.71s | 103.42s |
+| tabs, warm cache, fresh process | **4.32s** | 21.13s |
+
+The warm row is the one that matters: it is a fresh process reading the disk cache, which
+is what an operator meets after the nightly restart.
+
+### 19.5 Choices the operator made explicitly
+
+**Hide, then be honest.** The host mounts the frame when the tool is CALLED, not when it
+returns, so "render only when ready" cannot be done by asking the host to wait — it is
+done from inside, by reporting no height. The panel stays collapsed for a 1400ms grace
+period; if candidates land inside it the panel simply appears, complete. If not, it
+expands into a progress state rather than a blank space, because twenty seconds of
+nothing reads as broken exactly as strongly as twenty seconds of "Waiting". The progress
+bar is asymptotic and never reaches 100%: a bar that fills and then sits there is a lie
+the operator only has to catch once.
+
+**Hold each page until its own metadata is in**, rather than painting in similarity order
+and re-sorting when SA data lands. A list that reorders while being read is worse than
+one that arrives a moment later.
+
+**Three states per tab, not two.** A chosen ticker, an explicit "none of these", and
+undecided. Collapsing the last two would let Save fire on a series nobody had opened. A
+refused `remember_binding` stops the save where it is rather than pressing on, because
+saving three of five and resuming builds a chart nobody approved.
+
+### 19.6 Two bugs found on the way
+
+The supervisor threw `The property 'Count' cannot be found` for `-Lane chart` instead of
+the message listing valid lane names. An `if` used as an expression unrolls its result on
+assignment, undoing the inner `@()`, so a no-match left `$targets` as `$null` — the exact
+footgun `Get-LaneProcs` documents at the top of that same file.
+
+`AppConfig` owns `visibility`, not `tool()`. Passing it to `tool()` raises at import, and
+the listed `Tool` object does not carry `AppConfig` back out — so a self-test that
+introspects the wire shape reads `None` for an app-only tool and an app-and-model one
+alike. That check is pinned to the decorator text instead; a check that cannot fail is
+not a check.
+
+### 19.7 Known flake
+
+`the DLX stamp is not the render stamp` (§14 of the self-test) compares two second-
+resolution timestamps for inequality and fails when a render and a DLX note land in the
+same second. Seen once on 2026-09-09 and passing on re-run. Not fixed here; noted so the
+next person does not chase it as a regression.
