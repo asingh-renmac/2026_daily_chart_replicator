@@ -635,9 +635,9 @@ if HTTP_ENABLED:
       // DLX data lands. Rows that reorder while being read are worse than rows that
       // arrive a moment later.
       document.getElementById("hold").textContent =
-        "Reading DLX metadata for " + (p.candidate_count || 0) + " candidates. "
-        + "Seasonal-adjustment ordering needs it, so the list is held until it arrives "
-        + "rather than re-sorting under you.";
+        "Searching the catalogue and reading DLX metadata for this series. "
+        + "Seasonal-adjustment ordering needs that metadata, so the list is held until it "
+        + "arrives rather than re-sorting under you.";
       document.getElementById("why").textContent = "";
     } else {
       // The adjustment note is shown, not silent. An operator who cannot see that the list

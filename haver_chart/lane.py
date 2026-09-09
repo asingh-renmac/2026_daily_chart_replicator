@@ -500,19 +500,28 @@ def pick_series_pages(descriptors: list, applied_transform: str = "", formula: s
 
     pages = []
     for i, desc in enumerate(cleaned):
-        out = _resolve_pool(desc, applied_transform, formula, sa_hint, freq_hint, pool_n)
+        # Pages past the first are NOT resolved here either, only named. The catalog
+        # search is ~4s a descriptor, so resolving five up front would put 20s in front of
+        # the panel before the first tab's metadata had even started — paid for four tabs
+        # the operator may never open. `enrich_page` does the search and the metadata
+        # together, when a tab is actually opened.
         page = {"description": desc,
-                "status": out.get("status"),
-                "resolved": out.get("resolved"),
-                "reason": out.get("reason") or "",
-                "candidate_count": len(out.get("candidates") or []),
+                "status": "parked",
+                "resolved": None,
+                "reason": "",
+                "candidate_count": 0,
                 "enriched": False,
                 "sa_target": "",
                 "sa_note": "",
                 "candidates": []}
         if i == 0:
+            out = _resolve_pool(desc, applied_transform, formula, sa_hint, freq_hint,
+                                pool_n)
             shown, target, note = _enrich_and_order(out, desc, sa_hint, candidate_n)
             page.update({"enriched": True, "candidates": shown,
+                         "status": out.get("status"), "resolved": out.get("resolved"),
+                         "reason": out.get("reason") or "",
+                         "candidate_count": len(out.get("candidates") or []),
                          "sa_target": target, "sa_note": note})
         pages.append(page)
 
