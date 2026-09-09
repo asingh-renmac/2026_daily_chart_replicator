@@ -3044,3 +3044,112 @@ an `Adj` column plus a note naming the reordering — an operator who cannot see
 list was reordered has no way to know an NSA copy exists at all.
 
 Locked by selftest §13 (eleven further checks, 125/125 total).
+
+---
+
+## 17. The data lane has no refuse-to-guess step — options (investigation, 2026-09-09)
+
+**Not yet decided. No code written.** This section exists to be argued with.
+
+### 17.1 The gap, stated precisely
+
+Asked to "pull PPI for processed goods data from Haver", Claude searched the catalog via
+`haver-metadata.search_series`, read the results, chose `PC1@USECON` on its own judgement,
+and pulled it with `haver-data.get_observations`. The pick looks right. Nothing checked
+that it was.
+
+That is the whole of it: **resolution happens one step earlier than any of our guards, and
+outside all of them.** §15 of this plan exists because a plausible wrong ticker is the
+worst failure this work can produce, and the chart lane refuses to guess — it parks, and
+the picker is what a park looks like. The data lane has no equivalent, because
+`get_observations` takes a ticker that has *already* been chosen. There is nothing to park.
+
+So the request "give the data lane a picker" is really "give the data lane a resolver".
+The widget is the easy half.
+
+Two smaller symptoms of the same root, both visible in the 2026-09-09 screenshot: nothing
+applied D14/D18's SA preference, and the printed table labelled its index column SA and
+its year-over-year column NSA off what appears to be a single SA series. The second is
+unconfirmed — the table was cut off — but it is the kind of thing an unguarded path
+produces and a guarded one does not.
+
+### 17.2 Three facts that constrain every option
+
+**The lanes are on different machines, and not by accident.** `haver-metadata` is a Linux
+DigitalOcean droplet behind Entra OAuth, shared by teammates, and it *never imports
+Haver* — it reads a Neon mirror of the catalog. `haver-data` and `haver-chart` are on the
+Windows AVD because DLX only works next to a signed-in interactive session. Resolution
+today happens on the droplet; verification can only happen on the AVD.
+
+**Everything a picker needs is ALREADY co-located on the AVD.** The chart lane holds all
+three ingredients in one process: catalog search (`haver_search`, against the same Neon
+mirror), DLX confirmation, and the per-operator chat store. This is the fact that makes
+the cheap options cheap and is easy to miss from the outside.
+
+**The catalog knows about seasonal adjustment; DLX does not.** `sa_status` is a
+first-class indexed column on the `series` table, and `search_series` *already accepts it
+as a filter* — it is simply optional, and the model does not pass it. This is the exact
+inverse of the chart lane, where `Haver.metadata` has no SA field and D18 had to parse the
+descriptor's units parenthetical. On the droplet, SA-first ordering is close to free.
+
+### 17.3 The options
+
+**A — Delegate: route descriptions through the chart lane's resolver.** The model already
+has `haver-chart.resolve_series` available; it is read-only, standalone, and every
+argument but the descriptor has a default. It runs the full resolver — catalog search,
+exact-token relevance gate, SA and aggregation cross-checks, DLX confirmation — parks when
+the evidence is thin, and the picker fires on a park. Its answer is a confirmed
+`code@database`, which is precisely `get_observations`' input.
+
+*Cost:* close to zero. The instruction lives in `haver_data/SKILL.md`. Nothing is ported,
+nothing is duplicated, and bindings land in the ONE store that already exists, so an
+answer given in a data pull is honoured by the chart lane and vice versa.
+
+*Weaknesses, and they are real:* it requires the `haver-chart` connector to be enabled
+whenever the data lane is used, which couples two connectors that are currently
+independent. `resolve_series`' docstring is written for chart replication ("pass what is
+PRINTED ON THE CHART") and would mislead the model on an ad-hoc pull, so the wording needs
+widening. And it does nothing for a teammate using the metadata connector on its own.
+
+**B — SA-first and near-tie honesty in `search_series`.** Order results by `sa_status`
+against an inferred preference and tell the model when the top candidates are
+near-indistinguishable. Small, contained, pure SQL plus ranking on the droplet, and it
+helps *everyone* including teammates who will never touch the AVD.
+
+*Weakness:* it improves the odds without adding a refusal. The model may still pick. It
+narrows the gap rather than closing it, and should not be mistaken for closing it.
+
+**C — A real picker on the data lane.** Port the resolver so the AVD data lane can park.
+
+*Cost, honestly:* `resolve.py` is ~1,300 lines and lives in a *different repository*
+(`2026_daily_chart_replicator/src`) from the data lane (`2026_haver_mcp`), with separate
+venvs and separate deploys. Sharing it means a packaging decision; copying it means two
+copies of the most safety-critical file we have, drifting. It also duplicates the picker
+widget and raises the chat-store question below.
+
+*When it would be worth it:* if the data lane must work with the chart connector disabled.
+
+**Rejected: a picker on the metadata droplet.** It is where resolution happens today, so
+it looks like the obvious home, and it is the wrong one. The droplet has no DLX, so it
+cannot confirm a ticker before storing it — the guard that makes `remember_binding` safe.
+Worse, its bindings would live on the droplet while the chart lane's live on the AVD:
+**two memories that cannot see each other and will disagree.** One store that is sometimes
+absent beats two stores that quietly differ.
+
+### 17.4 Recommendation
+
+**A first, then B.** A closes the gap with no new code and no second store; B raises the
+floor for the shared connector and is independently useful. Hold C until A has been lived
+with — the coupling it introduces is the thing most likely to annoy in practice, and that
+is cheaper to discover than to design around.
+
+### 17.5 Open questions before any of this is built
+
+* Should a data-lane pull be *allowed* to proceed on an unresolved descriptor, or refuse
+  outright? The chart lane refuses. A data pull is more exploratory, and a hard refusal
+  may be the wrong trade.
+* Should bindings learned in a data pull be remembered at all, or only for the session? A
+  remembered answer is inherited by every future chart, which is a strong commitment to
+  make from a throwaway query.
+* Does the teammate-facing metadata connector need any of this, or is it acceptable that
+  guards exist only on the operator's own host?
