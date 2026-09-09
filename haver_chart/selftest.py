@@ -694,6 +694,16 @@ else:
           "the parked result says call pick_series ONCE with all parked descriptors")
     check("enrich_page" in _parked and "belongs to the panel" in _parked,
           "and warns the model off enrich_page, which is the panel's tool")
+    # enrich_page must be registered AND invisible to the model. It is the panel's half of
+    # pick_series; a model that called it would get rows it cannot display and would have
+    # spent 20s of DLX time to do it.
+    check("enrich_page" in _srv["tools"],
+          "enrich_page is registered as a tool the panel can call")
+    _enrich_app = getattr(_srv["tools"]["enrich_page"], "app", None)
+    check(_enrich_app is not None and list(getattr(_enrich_app, "visibility", []) or []) == ["app"],
+          "and it is app-only, never offered to the model",
+          f"visibility is {getattr(_enrich_app, 'visibility', None)!r}")
+
     import inspect as _inspect
     check("descriptors" in str(_inspect.signature(lane.pick_series_pages)),
           "lane.pick_series_pages takes a LIST of descriptors")
