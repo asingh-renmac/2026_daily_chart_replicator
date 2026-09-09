@@ -93,8 +93,9 @@ import errors and parser regressions before anyone books an RDP session.
 python haver_chart\selftest.py
 ```
 
-Expect **114/114** — 71 before §11 (six G20a checks), §12 (nine §16.2 checks), §13
-(twenty-three picker checks, including §16.4's resume path) and §14 (five DLX-session
+Expect **125/125** — 71 before §11 (six G20a checks), §12 (nine §16.2 checks), §13
+(thirty-four picker checks, including §16.4's resume path and §16.5's `ui/message`,
+descriptor-escaping and SA-ordering fixes) and §14 (five DLX-session
 `/health` checks) were added. This talks to DLX, so
 it also proves the host's DLX session is alive. A failure here is a reason to stop, not to
 restart the server and hope.
