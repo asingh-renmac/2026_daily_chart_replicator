@@ -759,11 +759,26 @@ else:
     # Holding a page until its metadata lands, rather than painting in similarity order
     # and re-sorting. Chosen deliberately: a list that reorders while being read is worse
     # than one that arrives a moment later.
-    check("re-sorting under you" in _html,
-          "an unenriched tab says it is holding, and why")
+    check("Still loading this series" in _html,
+          "a series that has not loaded says so in the operator's terms",
+          "the old wording explained SA ordering, which is not what they needed to know")
     check("enriching" in _html and "queue" in _html,
           "the panel enriches pages ONE at a time",
           "six concurrent metadata calls were measured to hang DLX outright")
+
+    # Every remaining series is queued the moment the first is on screen. Prefetching only
+    # ONE ahead is what put a progress bar on every Next but the first (2026-09-09).
+    check("prefetchAll" in _html and "prefetchNext" not in _html,
+          "ALL remaining series are prefetched, not just the next one")
+    _pre = _html.split("function prefetchAll")[-1].split("function ")[0]
+    check("return" not in _pre.split("for (")[-1].split("}")[0],
+          "and the prefetch loop does not stop at the first one it queues",
+          "the `return` in that loop was the whole defect")
+    check("queue.unshift(i)" in _html and "urgent" in _html,
+          "the series on screen jumps the queue ahead of background work",
+          "otherwise jumping to series 5 waits behind the prefetch of 2, 3 and 4")
+    check("ensureEnriched(i, true)" in _html,
+          "and navigating marks it urgent")
     _meta_src = _inspect.getsource(lane.candidate_meta)
     check("_DLX_META_LOCK" in _meta_src,
           "and the lane serializes DLX itself, not trusting the panel to do it",

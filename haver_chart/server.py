@@ -640,7 +640,7 @@ if HTTP_ENABLED:
   function go(i) {
     page = i;
     render();
-    ensureEnriched(i);
+    ensureEnriched(i, true);       // urgent: this is the one on screen
   }
 
   function render() {
@@ -654,14 +654,18 @@ if HTTP_ENABLED:
     document.getElementById("pagebody").style.display = holding ? "none" : "";
     document.getElementById("hold").style.display = holding ? "" : "none";
     if (holding) {
-      // Held deliberately rather than painted in similarity order and re-sorted when the
-      // DLX data lands. Rows that reorder while being read are worse than rows that
-      // arrive a moment later. Shown with a bar for the same reason the boot state has
-      // one: a wait nobody explains is a wait that looks like a fault.
+      // The old wording here explained the SA-ordering rationale for holding the rows
+      // back. True, but it read as an excuse for a delay it did not cause -- the delay
+      // was the missing prefetch -- and it told the operator about an internal ordering
+      // rule instead of the one thing they wanted to know: is this stuck, and how long.
+      // Rows are still held rather than painted in similarity order and re-sorted (that
+      // choice stands, it is just not the operator's problem).
+      var left = 0, ps = pages();
+      for (var k = 0; k < ps.length; k++) { if (!ps[k].enriched) { left++; } }
       document.getElementById("holdwhy").textContent =
-        "Searching the catalogue and reading DLX metadata for this series. "
-        + "Seasonal-adjustment ordering needs that metadata, so the list is held until it "
-        + "arrives rather than re-sorting under you.";
+        "Still loading this series. They are fetched one at a time because Haver's DLX "
+        + "will not answer parallel requests"
+        + (left > 1 ? " \\u2014 " + (left - 1) + " other(s) also still loading." : ".");
       document.getElementById("why").textContent = "";
       runBar("holdbar", p.asked_at || Date.now());
     } else {
@@ -706,14 +710,23 @@ if HTTP_ENABLED:
   // lock -- belt and braces, because either alone would be enough to be sorry about.
   var enriching = false, queue = [];
 
-  function ensureEnriched(i) {
+  function ensureEnriched(i, urgent) {
     var p = pages()[i];
-    if (!p || p.enriched || queue.indexOf(i) >= 0) { return; }
+    if (!p || p.enriched) { return; }
     // Stamped when the work is REQUESTED, not when the page is looked at, so a prefetched
     // page that the operator reaches late shows a bar reflecting the real elapsed wait
     // rather than restarting from zero.
     if (!p.asked_at) { p.asked_at = Date.now(); }
-    queue.push(i);
+
+    var at = queue.indexOf(i);
+    if (at >= 0) {
+      // Already queued. If the operator has now NAVIGATED to it, move it to the front:
+      // with everything queued up front, jumping to series 5 would otherwise wait behind
+      // 2, 3 and 4 -- background work delaying the one thing being looked at.
+      if (urgent && at > 0) { queue.splice(at, 1); queue.unshift(i); }
+      return;
+    }
+    if (urgent) { queue.unshift(i); } else { queue.push(i); }
     pump();
   }
 
@@ -754,12 +767,20 @@ if HTTP_ENABLED:
       });
   }
 
-  function prefetchNext() {
-    // Enrich the page AFTER the one being read, so opening the next tab is usually
-    // instant. Only one ahead: fetching all five up front is the 101-second version.
+  function prefetchAll() {
+    // EVERY remaining series, queued the moment the first one is on screen -- not one
+    // ahead. The earlier version stopped at the first unenriched page and was called
+    // once, so series 2 was prefetched and 3, 4 and 5 were fetched on arrival: the
+    // operator hit a progress bar on every Next but the first.
+    //
+    // "Don't fetch all five" was the right rule in the wrong place. Fetching five BEFORE
+    // the panel appears is the ~102s version and is still refused (that is why
+    // pick_series_pages enriches only the first). Fetching them AFTER, while the operator
+    // is reading series one, costs them nothing: the reading time is the only free time
+    // in the whole interaction, and it is more than enough to cover the rest.
     var ps = pages();
-    for (var i = page + 1; i < ps.length; i++) {
-      if (!ps[i].enriched) { ensureEnriched(i); return; }
+    for (var i = 0; i < ps.length; i++) {
+      if (!ps[i].enriched) { ensureEnriched(i); }
     }
   }
 
@@ -1042,7 +1063,7 @@ if HTTP_ENABLED:
       document.getElementById("panel").style.display = "";
       page = 0;
       render();
-      prefetchNext();
+      prefetchAll();
     }
   });
 
