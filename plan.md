@@ -3333,3 +3333,34 @@ The credential itself is deliberately not automated. Sysinternals `Autologon.exe
 as an LSA secret rather than the plaintext `DefaultPassword` registry value, and it should
 be typed into that dialog at the console by the operator, never passed on a command line
 where it lands in process listings and shell history.
+
+### 18.7 Settled: DLX does not need its desktop window — and did not fix this morning
+
+Measured, not inferred. A fresh pull as `madz` returned `LR@USECON`, 8 observations to
+2026-08-31, **with no DLX process running on the host at all** — the window opened at
+07:29 (pid 10604) had already exited. The Haver package reaches the data without a GUI or
+any resident process.
+
+Two consequences, one of them a correction:
+
+* **No Startup shortcut is needed.** Restoring the session is the whole of unattended
+  recovery, which makes auto-logon sufficient on its own.
+* **Opening DLX is not what brought the lanes back.** Signing in at 07:17 is. `Ensure`
+  started all three lanes at 07:18:03, and `haver-data` completed a pull at 07:22 —
+  both *before* the window was opened at 07:29. The natural reading of the morning
+  ("I opened DLX and it started working") credits the wrong action, and acting on it at
+  the next outage would mean opening DLX and waiting instead of just signing in.
+
+Getting here needed a detour worth recording. The probe was first run over SSH and it did
+not fail, it **wedged for five minutes**: SSH lands as `mcpdeploy`, DLX refuses that
+account by raising a GUI login modal, and in session 0 that modal has nowhere to appear,
+so the process blocks rather than erroring. Any DLX test run over SSH measures the wrong
+account and hangs while doing it. `run_as_madz.ps1` runs the probe through a scheduled
+task with `LogonType = Interactive` — the same mechanism `McpLaneEnsure` uses — with a
+timeout, a kill, and an unregister in `finally`, because a leftover task that fires a
+probe on some future trigger is a booby trap.
+
+Three of the diagnostics written today were themselves broken by the same StrictMode trap
+in two forms: `.Count` on a pipeline that yields a single object, and `.Property` on an
+object that lacks it. Both throw only in the case the code was written to detect. A
+diagnostic is code that runs once, in an emergency, and these ones failed exactly then.
