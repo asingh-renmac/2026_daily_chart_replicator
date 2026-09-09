@@ -779,6 +779,28 @@ else:
           "otherwise jumping to series 5 waits behind the prefetch of 2, 3 and 4")
     check("ensureEnriched(i, true)" in _html,
           "and navigating marks it urgent")
+    # §19.8 — the panel's prefetch is not the only mechanism, because it cannot be. It
+    # depends on the chat host forwarding tool calls after the model's turn has ended, and
+    # on 2026-09-09 an operator spent five minutes on series one and still met a cold
+    # series three. The server warms the rest itself, where no host is in the loop.
+    check("warm_pages" in _inspect.getsource(lane.pick_series_pages),
+          "pick_series_pages warms the remaining series server-side")
+    _warm_src = _inspect.getsource(lane._prefetch_loop)
+    check("_fg_busy" in _warm_src,
+          "and the warmer yields to any foreground request",
+          "warming a page nobody is looking at must never delay one somebody is")
+    check("daemon=True" in _inspect.getsource(lane.warm_pages),
+          "the warmer is a daemon thread, so it cannot hold a restart open")
+    check(_inspect.getsource(lane.warm_pages).count("Thread(") == 1
+          and "_PREFETCH_LOCK" in _inspect.getsource(lane.warm_pages),
+          "exactly ONE warmer thread, guarded",
+          "concurrent DLX callers are the documented way to hang it (19.2)")
+    check("_DLX_META_LOCK" in _inspect.getsource(lane._resolve_pool),
+          "the catalogue search holds the DLX lock too",
+          "with a background warmer there are two threads that can be inside Haver")
+    check("_foreground" in str(_inspect.signature(lane.enrich_page)),
+          "enrich_page knows whether an operator is waiting on it")
+
     _meta_src = _inspect.getsource(lane.candidate_meta)
     check("_DLX_META_LOCK" in _meta_src,
           "and the lane serializes DLX itself, not trusting the panel to do it",
