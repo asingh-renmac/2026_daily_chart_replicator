@@ -3296,3 +3296,40 @@ real incident.
   auto-logon happens.
 * **Make the nightly aware of a pending reboot**, so it does not do work that is about to
   be discarded — and, more importantly, is not interrupted halfway.
+
+### 18.6 Built: the alert now names the one thing waiting cannot fix
+
+`Get-HostContext` reads boot time and interactive presence; `Get-OutageDiagnosis` turns
+the pair into one sentence, and is pure so the wording is testable — text first exercised
+during an incident is a liability at the moment it matters most. When lanes fail and no
+session exists, the alert leads with **ACTION NEEDED** and says to connect over RDP.
+
+Two details that are easy to get backwards:
+
+* **With a session present the diagnosis says nothing.** `Ensure` will fix it inside five
+  minutes, and commentary on a self-healing event is how alerts get ignored.
+* **With no session the restart request is SKIPPED**, not written. `McpLaneEnsure` is its
+  only reader and cannot run; the file would age out of its 30-minute window unread, and
+  the cooldown it stamps would suppress a *real* request later.
+
+Interactive presence comes from `explorer.exe` owners rather than `query user`, whose
+output is localized and whose exit code is non-zero precisely when the answer is "nobody"
+— a diagnostic that fails when it has something to say is not a diagnostic. `-ShowContext`
+proves the reading, where `-SelfTest` proves the wording; on the live host it reports boot
+`03:35:43`, `madz` present, diagnosis silent. 18/18.
+
+**Auto-logon is viable here, and two of the three blockers I reported were my own bugs.**
+Measured on the host: domain-joined to `renmac.local` (so the domain argument is the
+NetBIOS name, not an Entra form); **no logon banner** — the first check called one "set"
+because a one-space `LegalNoticeText` passed a truthiness test; **no MFA credential
+provider** — of nine flagged, eight are Microsoft's own and the only third-party one,
+ScreenConnect, is disabled. No FSLogix container to contend with. Two real items remain:
+`AutoLogonCount = 97` is stale and gives auto-logon an expiry date, and `madz`'s Startup
+folder is empty, so **DLX would not return even with the session restored** — which is
+what makes the §18.4 anomaly worth settling before adding a startup shortcut for a window
+that may not be needed.
+
+The credential itself is deliberately not automated. Sysinternals `Autologon.exe` keeps it
+as an LSA secret rather than the plaintext `DefaultPassword` registry value, and it should
+be typed into that dialog at the console by the operator, never passed on a command line
+where it lands in process listings and shell history.
