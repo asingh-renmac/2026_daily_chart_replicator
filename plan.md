@@ -3295,7 +3295,8 @@ real incident.
   safe, and turns a confusing 502 into an instruction. Worth doing whether or not
   auto-logon happens.
 * **Make the nightly aware of a pending reboot**, so it does not do work that is about to
-  be discarded — and, more importantly, is not interrupted halfway.
+  be discarded — and, more importantly, is not interrupted halfway. *Resolved by moving
+  the slot instead; see §18.9.*
 
 ### 18.6 Built: the alert now names the one thing waiting cannot fix
 
@@ -3398,3 +3399,31 @@ alarming reading.** It cost fifteen minutes of believing a successful test had f
 fix in every case is the same — make the probe prove it ran, rather than inferring from
 silence. `curl` against the public endpoints, which needed no quoting at all, gave the
 right answer in one call.
+
+### 18.9 The nightly moves to 02:30, chosen against the patch schedule
+
+The reboot is not weekly and not arbitrary. It is **monthly, the Wednesday after Patch
+Tuesday**, and it is pinned to just after 03:00 by policy:
+
+| Date | First reboot | Second reboot |
+|---|---|---|
+| Wed 2026-07-15 | 03:27:21 `MoUsoCoreWorker` | 03:31:12 `TrustedInstaller` |
+| Wed 2026-08-12 | 03:29:26 | 03:33:31 |
+| Wed 2026-09-09 | 03:30:34 | 03:35:28 |
+
+`ActiveHoursStart = 18`, `ActiveHoursEnd = 3`. Windows is forbidden from auto-restarting
+between 18:00 and 03:00 and fires the moment that protection expires, which is why all six
+reboots cluster in the minutes after 03:27. Note there are always **two**, four minutes
+apart — a slot that survives the first still has to survive the second.
+
+The instinct to move the nightly earlier was right; **03:15 was the worst available slot**,
+sitting in the unprotected gap between the policy lapsing and the reboot arriving. That
+converts a restart that was merely discarded into one interrupted halfway. 02:30 sits
+inside active hours, where a reboot is prevented by policy rather than by luck, with about
+an hour of clearance from the earliest reboot on record.
+
+Retimed in place rather than re-registered, because re-creating a task is how an
+`Interactive` principal quietly becomes something else — verified afterwards as still
+`madz / Interactive / Highest`, which is what lets it reach DLX at all. The installer
+default and `SERVER_SETUP.md` were changed too, so a redeploy cannot silently restore
+03:30.
