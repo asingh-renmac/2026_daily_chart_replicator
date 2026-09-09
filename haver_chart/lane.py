@@ -19,6 +19,7 @@ import html as _html
 import os
 import re
 import shutil
+import sys
 import threading
 import uuid
 from datetime import date, datetime, timedelta, timezone
@@ -327,6 +328,7 @@ _META_LOCK = threading.Lock()
 _DLX_META_LOCK = threading.Lock()
 _META_TTL_HOURS = 24.0
 _meta_cache: Optional[dict] = None
+_meta_warned = False
 
 
 def _meta_cache_path() -> Path:
@@ -380,10 +382,25 @@ def candidate_meta(code: str) -> dict:
         cache[code] = {"at": now, "meta": meta}
         try:
             tmp = _meta_cache_path().with_suffix(".json.tmp")
-            tmp.write_text(json.dumps(cache), encoding="utf-8")
+            # `default=str` is not defensive padding: DLX returns `datetimemod` as a real
+            # datetime, so a plain dumps raises TypeError on EVERY record. The first
+            # version of this swallowed that and reported a working cache that had never
+            # written a byte -- the probe said `entries=0` twice and the 20s wait never
+            # moved.
+            tmp.write_text(json.dumps(cache, default=str), encoding="utf-8")
             tmp.replace(_meta_cache_path())
-        except Exception:
-            pass                      # an unwritable cache is slow, not broken
+        except Exception as exc:
+            # An unwritable cache is slow, not broken, so this must not raise. But it must
+            # not be silent either: a cache that quietly never writes is indistinguishable
+            # from no cache at all, which is exactly how the bug above survived a
+            # measurement designed to catch it. Once per process is enough to be findable
+            # in the lane log without flooding it.
+            global _meta_warned
+            if not _meta_warned:
+                _meta_warned = True
+                print(f"[haver-chart] metadata cache is not writable, every panel will "
+                      f"pay the cold DLX cost: {type(exc).__name__}: {exc}",
+                      file=sys.stderr)
     return dict(meta)
 
 
