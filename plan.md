@@ -3136,12 +3136,48 @@ Worse, its bindings would live on the droplet while the chart lane's live on the
 **two memories that cannot see each other and will disagree.** One store that is sometimes
 absent beats two stores that quietly differ.
 
-### 17.4 Recommendation
+### 17.4 Recommendation, and what was built (2026-09-09)
 
 **A first, then B.** A closes the gap with no new code and no second store; B raises the
 floor for the shared connector and is independently useful. Hold C until A has been lived
 with — the coupling it introduces is the thing most likely to annoy in practice, and that
 is cheaper to discover than to design around.
+
+**Built: A, with a gate rather than only an instruction.** `get_observations` gained a
+required `ticker_source` — `exact`, `resolver` or `search` — carried as a schema enum so
+the three options reach the model without relying on prose being read.
+`haver_data/provenance.py` refuses `search`, and the refusal names the way forward
+(`resolve_series`, then `pick_series` on a park) instead of merely saying no. `exact`
+survives because "pull `LANAGRA@USECON`" is a legitimate request that needs no resolver.
+
+`search` is deliberately IN the vocabulary so that it can be refused. Leaving it out would
+push a model that had searched toward the nearest allowed label, converting a refusal we
+can act on into a mislabelled pull we cannot see.
+
+Every payload also carries `ticker_provenance`, in the result rather than the logs. The
+gate is declarative and therefore has a door in it: a model that searched and reports
+`exact` is not caught. Rather than claim a wall, the payload states in words that the
+operator named the ticker — a claim the operator can read and contradict.
+
+Also widened `resolve_series`' docstring, which said "pass what is PRINTED ON THE CHART"
+and would have steered the model wrong on an ad-hoc pull, and rewrote
+`haver_data/SKILL.md` step 1 — it had told the model to "call `search_series` first",
+which is to say the bypass was the documented workflow.
+
+Locked by `tests/test_haver_data.py` (seven new cases, 52 in the file, 186 in the repo)
+and the chart lane's 125/125.
+
+**Decided against: a chart/table widget in the data lane.** The chart Claude drew for the
+2026-09-09 PPI pull plots a year-over-year transform *it computed*; the tool returned a
+raw index at 1982=100. A widget can only draw its own tool's result, so ours would have
+shown a different and less useful chart, and matching it would mean putting transforms in
+the data lane — which is `render_chart`'s job, with house styling, ratified legends and a
+non-suppressible transform label. Multi-series compounds it: `get_observations` is one
+ticker per call and a widget binds to one result, so three series is three stacked
+widgets, and a batch tool would then have to rule on mixed units, mixed frequencies,
+ragged ranges and 10,000-point tables. Claude's rendering is free and handles the
+transform case; the observed failures were wrong tickers and mislabelled adjustment, which
+no widget fixes.
 
 ### 17.5 Open questions before any of this is built
 

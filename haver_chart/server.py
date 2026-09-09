@@ -199,14 +199,22 @@ def resolve_series(
     lag: str = "",
     plot_kind: str = "line",
 ) -> dict:
-    """Bind ONE series printed on a Haver chart to a confirmed `code@database`.
+    """Bind ONE series description to a confirmed `code@database`.
 
     NEVER guess or hand-type a ticker — always come through this tool. It runs the same
     resolver the production daily lane runs (catalog search, exact-token-set relevance
     gate, SA + aggregation cross-checks, DLX confirmation), so the chat lane binds what
-    the daily lane would bind.
+    the daily lane would bind. When the evidence is thin it PARKS rather than guessing;
+    follow a park with `pick_series` and let the operator choose.
 
-    Pass what is PRINTED ON THE CHART, not your interpretation of it:
+    USE IT FOR ANY DESCRIPTION, not only for chart replication. A plain data pull
+    ("PPI for processed goods") needs resolving exactly as a chart does, and the data
+    lane's `get_observations` refuses a ticker picked out of catalog search results —
+    `search_series` ranks on text similarity, which cannot tell a directional sibling or
+    an NSA twin from the series the words asked for. For a request with no chart behind
+    it, pass the operator's words as `base_descriptor` and leave the rest empty.
+
+    When there IS a source chart, pass what is PRINTED ON IT, not your interpretation:
       * `base_descriptor` — the series name exactly as it appears (e.g.
         "Philly Fed Mfg Business Outlook: Current Activity Diffusion Index").
       * `formula` — if the chart prints a formula, pass it VERBATIM ("zs(yryr%(IP))").
