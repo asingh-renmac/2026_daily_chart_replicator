@@ -726,14 +726,35 @@ else:
     check("parks AGAIN" in _html and "second time" in _html,
           "the resume instruction carries its own circuit breaker",
           "park -> pick -> re-run -> park is an infinite loop with a widget in it")
-    # §16.6 — the grace period. The host mounts the frame when the tool is CALLED, so
-    # "render only when ready" has to be done from inside the panel by showing nothing.
+    # §16.6 — the wait is EXPLAINED, from the first paint. The empty table with
+    # "Waiting for candidates..." is what made a working tool look broken; hiding the
+    # frame for the same 20s was the alternative and was rejected, so the progress state
+    # has to be the thing that renders first, not a fallback behind a timer.
     check('id="panel"' in _html and 'display:none' in _html,
-          "the panel starts hidden rather than rendering an empty table",
-          "20s of 'Waiting for candidates...' is what made a working tool look broken")
-    check("GRACE_MS" in _html and 'id="boot"' in _html,
-          "a grace period, then an honest progress state if it expires",
-          "20s of a blank frame reads as broken exactly as strongly as 20s of waiting")
+          "the choice table starts hidden rather than rendering empty",
+          "an empty table with no rows is indistinguishable from a broken tool")
+    check('id="boot"' in _html and "GRACE_MS" not in _html,
+          "the progress state is shown immediately, not after a grace period",
+          "the operator chose being told over a frame that hides itself")
+    check("runBar" in _html and "Math.exp" in _html,
+          "and the bar is asymptotic, never reaching 100%",
+          "a bar that fills and then sits there is a lie you only have to catch once")
+    check('id="holdbar"' in _html and 'id="bootbar"' in _html,
+          "both waits get a bar — the first panel AND each later series")
+
+    # Layout B: a wizard, one series on screen at a time.
+    check('id="back"' in _html and 'id="next"' in _html and "Series \" + (page + 1)" in _html,
+          "the panel is a wizard: Back, Next, and a 'Series N of M' counter")
+    check('goBtn.style.display = (!many || last)' in _html
+          and 'nextBtn.style.display = (many && !last)' in _html,
+          "Next becomes Save on the last step rather than sitting beside it",
+          "one forward action at a time is the whole point of choosing a wizard")
+    check("go back for the" in _html,
+          "reaching the end with gaps says so instead of greying Save out silently",
+          "that is the one way a wizard leaves someone stuck")
+    check('d.addEventListener("click", function () { go(i); })' in _html,
+          "the step dots jump straight to a series",
+          "a wizard's real cost is stepping back through everything to reach series 2")
 
     # Holding a page until its metadata lands, rather than painting in similarity order
     # and re-sorting. Chosen deliberately: a list that reorders while being read is worse

@@ -488,13 +488,14 @@ if HTTP_ENABLED:
  .msg{margin-top:10px;padding:8px;border-radius:6px;background:#1e293b;white-space:pre-wrap}
  .err{background:#7f1d1d;color:#fee2e2}
  .ok{background:#14532d;color:#dcfce7}
- .tabs{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:10px}
- .tab{padding:4px 9px;border-radius:5px;font-size:12px;cursor:pointer;
-      color:#94a3b8;border:1px solid transparent;white-space:nowrap}
- .tab:hover{color:#e2e8f0}
- .tab.on{color:#e2e8f0;background:#1e293b;border-color:#334155}
- .tab.got{color:#86efac}
- .tab.on.got{color:#86efac}
+ .step{display:flex;align-items:center;gap:9px;margin-bottom:10px}
+ .step .sub{margin:0}
+ .dots{display:flex;gap:5px}
+ .dot{width:8px;height:8px;border-radius:5px;background:#1e293b;cursor:pointer}
+ .dot.now{background:#94a3b8}
+ .dot.got{background:#2563eb}
+ .dot.no{background:#7f1d1d}
+ .skel{height:9px;border-radius:3px;background:#1e293b;margin-top:7px}
  .foot{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
  .foot .sub{margin:0 0 0 auto}
  .bar{height:3px;background:#1e293b;border-radius:2px;margin-top:10px;overflow:hidden}
@@ -507,7 +508,10 @@ if HTTP_ENABLED:
       has to be done from in here, by reporting no height, rather than by asking the host
       to wait. -->
  <div id="panel" style="display:none">
-  <div id="tabs" class="tabs"></div>
+  <div class="step" id="stepline">
+   <span class="sub" id="stepnum"></span>
+   <span class="dots" id="dots"></span>
+  </div>
   <h1 id="title">Pick a series</h1>
   <div class="sub" id="why"></div>
   <div id="pagebody">
@@ -519,21 +523,35 @@ if HTTP_ENABLED:
      <input type="text" id="manual" placeholder="CODE@DATABASE"></div>
    <div><button id="skip" class="ghost">None of these for this series</button></div>
   </div>
-  <div id="hold" class="sub" style="display:none"></div>
+  <div id="hold" style="display:none">
+   <div class="sub" id="holdwhy"></div>
+   <div class="bar"><div class="barfill" id="holdbar"></div></div>
+   <div class="skel" style="width:92%"></div>
+   <div class="skel" style="width:78%"></div>
+   <div class="skel" style="width:85%"></div>
+  </div>
   <div class="foot">
-   <button id="go" disabled>Save &amp; continue</button>
-   <button id="next" class="ghost">Next &rarr;</button>
+   <button id="back" class="ghost">&larr; Back</button>
+   <button id="next">Next &rarr;</button>
+   <button id="go" disabled>Save all &amp; continue</button>
    <span id="tally" class="sub"></span>
   </div>
   <div id="msg"></div>
  </div>
- <!-- Shown only if the grace period expires before candidates arrive. Twenty seconds of
-      a blank frame reads as broken exactly as strongly as twenty seconds of "Waiting". -->
- <div id="boot" style="display:none">
+ <!-- Visible from the FIRST paint, not after a delay. The alternative considered was
+      hiding the frame until candidates landed, which reads as "render only when ready" --
+      but the operator chose to be told what is happening instead, and with a cold DLX
+      taking ~20s that is the safer of the two: an empty space says nothing, whereas this
+      says the tool is working and roughly how long it has been. -->
+ <div id="boot">
   <h1>Finding candidates</h1>
-  <div class="sub" id="bootwhy">Reading DLX metadata &mdash; this takes about 20 seconds
-   the first time for a series, and a moment after that.</div>
+  <div class="sub" id="bootwhy">Searching the catalogue and reading DLX metadata. About
+   20 seconds the first time a series is looked up, a few seconds after that.</div>
   <div class="bar"><div class="barfill" id="bootbar"></div></div>
+  <div class="skel" style="width:92%"></div>
+  <div class="skel" style="width:78%"></div>
+  <div class="skel" style="width:85%"></div>
+  <div class="skel" style="width:64%"></div>
  </div>
 <script>
 (function () {
@@ -590,28 +608,33 @@ if HTTP_ENABLED:
     return ps.length > 0;
   }
 
-  function drawTabs() {
-    var strip = document.getElementById("tabs");
-    strip.textContent = "";
+  function drawSteps() {
+    // A wizard, one series at a time: the count and the dots are the whole of the
+    // navigation chrome, so that the only thing competing for attention is the choice.
     var ps = pages();
-    if (ps.length < 2) { strip.style.display = "none"; return; }
-    strip.style.display = "flex";
+    var line = document.getElementById("stepline");
+    if (ps.length < 2) { line.style.display = "none"; return; }
+    line.style.display = "flex";
+    document.getElementById("stepnum").textContent =
+      "Series " + (page + 1) + " of " + ps.length;
+    var dots = document.getElementById("dots");
+    dots.textContent = "";
     ps.forEach(function (p, i) {
-      var el = document.createElement("div");
-      el.className = "tab" + (i === page ? " on" : "") + (decided(i) ? " got" : "");
-      var mark = decided(i) ? (picks[i] === null ? "\\u2717 " : "\\u2713 ") : (i + 1) + ". ";
-      el.textContent = mark + shortName(p.description || "");
-      el.title = p.description || "";
-      el.addEventListener("click", function () { go(i); });
-      strip.appendChild(el);
+      var d = document.createElement("span");
+      var cls = "dot";
+      if (picks[i] === null) { cls += " no"; }
+      else if (picks[i] !== undefined) { cls += " got"; }
+      else if (i === page) { cls += " now"; }
+      d.className = cls;
+      d.title = (i + 1) + ". " + (p.description || "")
+              + (picks[i] ? " \\u2014 " + picks[i]
+                          : picks[i] === null ? " \\u2014 none of these" : "");
+      // Clickable. A wizard's one real cost is that going back to series 2 means stepping
+      // through everything between, and a dot that jumps there removes that without
+      // changing the layout or putting a second decision on screen.
+      d.addEventListener("click", function () { go(i); });
+      dots.appendChild(d);
     });
-  }
-
-  function shortName(text) {
-    // Tab labels have to fit; the full descriptor lives in the title attribute and in the
-    // heading below, so nothing is actually hidden.
-    var s = String(text || "");
-    return s.length > 26 ? s.slice(0, 25) + "\\u2026" : s;
   }
 
   function go(i) {
@@ -623,7 +646,7 @@ if HTTP_ENABLED:
   function render() {
     var p = cur();
     if (!p) { return; }
-    drawTabs();
+    drawSteps();
     document.getElementById("title").textContent =
       "Pick a series for: " + (p.description || "");
 
@@ -633,13 +656,16 @@ if HTTP_ENABLED:
     if (holding) {
       // Held deliberately rather than painted in similarity order and re-sorted when the
       // DLX data lands. Rows that reorder while being read are worse than rows that
-      // arrive a moment later.
-      document.getElementById("hold").textContent =
+      // arrive a moment later. Shown with a bar for the same reason the boot state has
+      // one: a wait nobody explains is a wait that looks like a fault.
+      document.getElementById("holdwhy").textContent =
         "Searching the catalogue and reading DLX metadata for this series. "
         + "Seasonal-adjustment ordering needs that metadata, so the list is held until it "
         + "arrives rather than re-sorting under you.";
       document.getElementById("why").textContent = "";
+      runBar("holdbar", p.asked_at || Date.now());
     } else {
+      stopBar();
       // The adjustment note is shown, not silent. An operator who cannot see that the list
       // was reordered has no way to know an NSA copy exists below the cut.
       document.getElementById("why").textContent =
@@ -647,15 +673,31 @@ if HTTP_ENABLED:
       drawRows(p);
     }
 
-    var ps = pages();
+    var ps = pages(), last = page >= ps.length - 1, many = ps.length > 1;
+    var backBtn = document.getElementById("back");
     var nextBtn = document.getElementById("next");
-    nextBtn.style.display = ps.length > 1 ? "" : "none";
-    nextBtn.disabled = page >= ps.length - 1;
-    document.getElementById("go").disabled = !allDecided() || done;
+    var goBtn = document.getElementById("go");
+    backBtn.style.display = many ? "" : "none";
+    backBtn.disabled = page === 0;
+    // Next and Save never share the screen: in a wizard the forward action is one thing,
+    // and it changes meaning on the last step rather than sitting beside a second button
+    // that does something different.
+    nextBtn.style.display = (many && !last) ? "" : "none";
+    goBtn.style.display = (!many || last) ? "" : "none";
+    goBtn.disabled = !allDecided() || done;
+
     var n = 0;
     for (var i = 0; i < ps.length; i++) { if (decided(i)) { n++; } }
-    document.getElementById("tally").textContent =
-      ps.length > 1 ? (n + " of " + ps.length + " decided") : "";
+    var tally = "";
+    if (many) {
+      tally = n + " of " + ps.length + " decided";
+      // The one way to get stuck in a wizard is to reach the end with gaps behind you and
+      // find Save greyed out with no explanation.
+      if (last && n < ps.length) {
+        tally += " \\u2014 go back for the " + (ps.length - n) + " still open";
+      }
+    }
+    document.getElementById("tally").textContent = tally;
     report();
   }
 
@@ -667,6 +709,10 @@ if HTTP_ENABLED:
   function ensureEnriched(i) {
     var p = pages()[i];
     if (!p || p.enriched || queue.indexOf(i) >= 0) { return; }
+    // Stamped when the work is REQUESTED, not when the page is looked at, so a prefetched
+    // page that the operator reaches late shows a bar reflecting the real elapsed wait
+    // rather than restarting from zero.
+    if (!p.asked_at) { p.asked_at = Date.now(); }
     queue.push(i);
     pump();
   }
@@ -703,7 +749,7 @@ if HTTP_ENABLED:
       })
       .then(function () {
         enriching = false;
-        if (i === page) { render(); } else { drawTabs(); }
+        if (i === page) { render(); } else { drawSteps(); }
         pump();
       });
   }
@@ -779,6 +825,10 @@ if HTTP_ENABLED:
 
   document.getElementById("next").addEventListener("click", function () {
     if (page < pages().length - 1) { go(page + 1); }
+  });
+
+  document.getElementById("back").addEventListener("click", function () {
+    if (page > 0) { go(page - 1); }
   });
 
   document.getElementById("skip").addEventListener("click", function () {
@@ -996,35 +1046,41 @@ if HTTP_ENABLED:
     }
   });
 
-  // ── the grace period ──────────────────────────────────────────────────────
-  // Nothing is shown at all for GRACE_MS. If candidates land inside it the panel simply
-  // appears, complete, and the wait was never visible -- which is the "render only when
-  // ready" behaviour, achieved from this side because the host decides when to mount the
-  // frame and it mounts on the CALL, not the result.
-  //
-  // If the grace period expires we expand into an honest progress state rather than
-  // leaving a blank space, because 20 seconds of nothing reads as broken every bit as
-  // strongly as 20 seconds of "Waiting for candidates...".
-  var GRACE_MS = 1400, arrived = false, t0 = Date.now();
+  // ── saying what is happening, from the first paint ────────────────────────
+  // No grace period, no hidden frame: the panel announces the wait immediately and keeps
+  // reporting it. The host mounts this frame when the tool is CALLED rather than when it
+  // returns, so the alternative -- reporting no height until candidates land -- was
+  // available and was deliberately not taken. With a cold DLX lookup at ~20s, an empty
+  // space tells the operator nothing, and "nothing" is what made a working tool look
+  // broken in the first place.
+  var arrived = false, barTimer = null;
 
   function showBoot(on) {
     document.getElementById("boot").style.display = on ? "" : "none";
+    if (!on) { stopBar(); }
     report();
   }
 
-  setTimeout(function () { if (!arrived) { showBoot(true); tick(); } }, GRACE_MS);
-
-  function tick() {
-    if (arrived) { return; }
-    // Deliberately asymptotic: it approaches 90% and never reaches it, because the
-    // honest thing to say is "still working", and a bar that hits 100% and sits there is
-    // a lie the operator only has to catch once.
-    var secs = (Date.now() - t0) / 1000;
-    var pct = Math.min(90, 100 * (1 - Math.exp(-secs / 9)));
-    document.getElementById("bootbar").style.width = pct.toFixed(0) + "%";
-    report();
-    setTimeout(tick, 700);
+  function stopBar() {
+    if (barTimer) { clearTimeout(barTimer); barTimer = null; }
   }
+
+  function runBar(id, since) {
+    // Deliberately asymptotic: it approaches 90% and never reaches it, because the honest
+    // thing to say is "still working". A bar that fills to 100% and then sits there is a
+    // lie the operator only has to catch once before they stop believing the next one.
+    stopBar();
+    (function step() {
+      var el = document.getElementById(id);
+      if (!el) { return; }
+      var secs = (Date.now() - since) / 1000;
+      el.style.width = Math.min(90, 100 * (1 - Math.exp(-secs / 9))).toFixed(0) + "%";
+      report();
+      barTimer = setTimeout(step, 700);
+    })();
+  }
+
+  runBar("bootbar", Date.now());
 
   send({jsonrpc: "2.0", id: 1, method: "ui/initialize",
         params: {protocolVersion: "2026-01-26",
