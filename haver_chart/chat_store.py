@@ -146,12 +146,16 @@ def remember(description: str, code_at_db: str, *, source: str = "park_resolutio
     blob["_schema"] = _SCHEMA
     if not blob.get("_operator"):
         blob["_operator"] = operator_identity()[1]
+    key = R._norm_key(description)
     entry = {"code": code_at_db, "descriptor": description,
              "added": datetime.now(timezone.utc).isoformat(),
              "source": source, "note": note}
-    blob["entries"][R._norm_key(description)] = entry
+    blob["entries"][key] = entry
     _write_atomic(path, blob)
-    return entry
+    # The key is returned so the picker can SHOW it. A save that lands under a key the
+    # next lookup does not reach is the one failure here that looks like success, and it
+    # is invisible unless the key is surfaced.
+    return dict(entry, key=key)
 
 
 def forget(description: str, operator: Optional[str] = None) -> bool:

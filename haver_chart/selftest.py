@@ -677,6 +677,40 @@ else:
           "no panel for a series that needed no choice — the whole point of a separate tool")
     check("a0m059@bci" in _bound, "a resolved result still names the bound code in text")
 
+    # §16.4 — the panel resumes the work. Saving a binding and then making the operator
+    # retype the request they already made is what stops a feature being used.
+    check("original_request" in _parked and "remaining_parks" in _parked,
+          "the parked result tells the model to pass the request and the park count",
+          "the panel cannot quote a request it was never given")
+    check("VERBATIM" in _parked or "verbatim" in _parked,
+          "and insists on the request verbatim, not a paraphrase",
+          "re-running the model's summary is not re-running the operator's request")
+
+    # D15: only the LAST panel resumes. Three parks resuming three times renders the
+    # chart three times, twice with slots still unresolved.
+    check("remaining_parks" in _html and "do not render anything yet" in _html,
+          "with parks outstanding the panel says keep going, not render (D15)")
+    # D16: the panel stays live in scroll-back forever.
+    check("issued" in _html and "30" in _html,
+          "an old panel saves the bind but refuses to re-run it (D16)")
+    check("Do NOT re-run anything from this old panel" in _html,
+          "and says so to the model explicitly")
+    # The loop guard. A save landing under a key the next lookup misses would otherwise
+    # park again, re-open the panel, and repeat forever.
+    check("parks AGAIN" in _html and "second time" in _html,
+          "the resume instruction carries its own circuit breaker",
+          "park -> pick -> re-run -> park is an infinite loop with a widget in it")
+    # The escape hatch must store NOTHING: a shrug today must not become a remembered
+    # decision that every future chat inherits.
+    check('id="nope"' in _html and "Do not bind anything" in _html,
+          "there is a way out that saves nothing (none-of-these)")
+    _nope = _html.split('id="nope"')[-1]
+    check("remember_binding" not in _nope.split("go\").addEventListener")[0],
+          "and the none-of-these path never calls remember_binding")
+    check("key" in _html and "Stored under key" in _html,
+          "the panel shows which key the bind landed under",
+          "a save under an unreachable key is the one failure that looks like success")
+
 # ── 14. /health reports the DLX session, not just render liveness ───────────────
 # The data lane refused every pull from 2026-09-04 to 09-08 and its /health said so the
 # whole time. The chart lane, on the SAME DLX install, published nothing about the

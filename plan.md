@@ -2940,3 +2940,50 @@ stored-entry count suggests.
 Fix is harder normalization — strip leading articles, trailing parentheticals and
 punctuation. **Not** fuzzy matching: these are unreviewed personal answers, and a wrong
 silent bind out of that store is precisely the failure this lane refuses to make.
+
+### §16.4 The picker resumes the work — BUILT 2026-09-08
+
+Saving a binding and then making the operator retype the request they had already made is
+the kind of small indignity that stops a feature being used. The panel already handed
+control back with "continue building the chart with it", but it did not know WHAT to
+continue: `pick_series` received a descriptor, never the request. So "continue" was a hint
+the model was free to interpret, and a paraphrase of the request is not the request.
+
+`pick_series` now takes `original_request` (verbatim) and `remaining_parks`, and the panel
+quotes the request back on submit. Three decisions shaped the rest, all of them about the
+ways an automatic re-run misfires.
+
+**D15 — with several parks, only the LAST panel resumes.** A three-park commentary opens
+three panels. Each one resuming the request would render the chart three times, twice with
+slots still unresolved, and the operator would be left deciding which of three charts was
+the real one. Earlier panels instead say "N slot(s) still parked, resolve those first and
+do not render yet". The count has to come from the model, since only it knows how many
+slots the request produced.
+
+**D16 — an old panel saves but does not re-run.** A rendered panel stays live HTML in
+scroll-back indefinitely. Clicking submit on an hour-old one would re-run an hour-old
+request as though it were current. Past 30 minutes the binding is still stored — that part
+is always right — but the panel explicitly tells the model not to act, and tells the
+operator to ask again. `issued` is stamped server-side in `lane.pick_series`; a panel is
+not trusted to date itself.
+
+**D17 — one action button plus an escape.** "Save & continue" and "None of these — stop".
+The escape exists because there was previously no way to abandon a pick: the operator had
+to close the panel and hope the model did not guess. It stores NOTHING, deliberately — a
+shrug today must not become a remembered decision every future chat inherits.
+
+Two failure modes got explicit guards rather than good intentions:
+
+* **The loop.** If a save lands under a key the next lookup does not reach, the re-run
+  parks the same descriptor, the panel reopens, and the operator is in a cycle with a
+  widget in it. The resume instruction now carries its own circuit breaker: *if this
+  descriptor parks AGAIN after the save, stop and say the save did not take — do not open
+  the picker for it a second time.* `chat_store.remember` also returns the key it wrote,
+  which the panel displays, because a save under an unreachable key is the one failure
+  here that looks exactly like success.
+* **DLX refusing a typed ticker** was already handled — `remember_binding` confirms before
+  storing, and its refusal surfaces in the panel with the button re-enabled. No re-run
+  fires on a failed save.
+
+Locked by selftest §13 (fourteen new checks, 114/114 total), including that the
+none-of-these path never reaches `remember_binding`.

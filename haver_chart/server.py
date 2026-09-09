@@ -177,7 +177,10 @@ def _park_text(out: dict) -> str:
             "shows the operator a table of candidates with source, start date, LIVE end "
             "date and observation count, and their click records the binding for you. Do "
             "NOT ask them to type a ticker in prose, and do NOT bind a candidate "
-            "yourself. Wait for their choice — it comes back to you as a message.")
+            "yourself. Wait for their choice — it comes back to you as a message. "
+            "Pass `original_request` (their request VERBATIM, not your paraphrase) and "
+            "`remaining_parks` (how many slots parked in total, including this one) so "
+            "the panel can resume the work on a click without them retyping it.")
     else:
         lines.append(
             "ACTION REQUIRED — this slot PARKED. Show the operator the candidates above "
@@ -470,6 +473,8 @@ if HTTP_ENABLED:
  button{margin-top:12px;background:#2563eb;color:#fff;border:0;padding:8px 16px;
         border-radius:6px;font-size:13px;cursor:pointer}
  button[disabled]{background:#334155;color:#94a3b8;cursor:default}
+ button.ghost{background:transparent;color:#94a3b8;border:1px solid #334155;margin-left:8px}
+ button.ghost:hover{color:#e2e8f0;border-color:#475569}
  .msg{margin-top:10px;padding:8px;border-radius:6px;background:#1e293b;white-space:pre-wrap}
  .err{background:#7f1d1d;color:#fee2e2}
  .ok{background:#14532d;color:#dcfce7}
@@ -481,9 +486,10 @@ if HTTP_ENABLED:
    <th></th><th>Ticker</th><th>Description</th><th>Source</th>
    <th>Start</th><th>Live end</th><th>Obs</th><th>Freq</th>
  </tr></thead><tbody id="rows"></tbody></table>
- <div class="man">None of these &mdash; enter a ticker:
+ <div class="man">Not listed &mdash; enter a ticker:
    <input type="text" id="manual" placeholder="CODE@DATABASE"></div>
- <button id="go" disabled>Save binding</button>
+ <button id="go" disabled>Save &amp; continue</button>
+ <button id="nope" class="ghost">None of these &mdash; stop</button>
  <div id="msg"></div>
 <script>
 (function () {
@@ -567,6 +573,75 @@ if HTTP_ENABLED:
     document.getElementById("go").disabled = !chosen;
   });
 
+  function tell(text) {
+    // `role: user` because it carries the OPERATOR's decision, not the server's opinion.
+    send({jsonrpc: "2.0", id: nextId++, method: "ui/message",
+          params: {role: "user", content: {type: "text", text: text}}});
+  }
+
+  function ageMinutes() {
+    // Server-stamped; a panel cannot be trusted to date itself. Missing means unknown,
+    // and unknown is treated as fresh -- refusing to act would be worse than acting.
+    if (!data || !data.issued) { return 0; }
+    var t = Date.parse(data.issued);
+    if (isNaN(t)) { return 0; }
+    return (Date.now() - t) / 60000;
+  }
+
+  function handBack(code, key) {
+    var what = "I picked " + code + " for \\u201c" + data.description +
+               "\\u201d and it is saved.";
+    var left = (data.remaining_parks || 1) - 1;
+
+    // D15. Every panel re-running the request would render a three-park commentary three
+    // times, twice with slots still unresolved. Only the last one resumes.
+    if (left > 0) {
+      tell(what + " There are still " + left + " parked slot(s) in my request. " +
+           "Resolve those FIRST with pick_series and do not render anything yet.");
+      note(document.getElementById("msg").textContent +
+           "\\n" + left + " slot(s) still parked \\u2014 the chart runs once those are picked.", "ok");
+      return;
+    }
+
+    // D16. The panel stays live in scroll-back forever, so a click on an hour-old one
+    // would re-run an hour-old request as if it were current. Save it, but do not act.
+    if (ageMinutes() > 30) {
+      tell(what + " Do NOT re-run anything from this old panel \\u2014 the binding is " +
+           "stored and I will ask again if I still want it.");
+      note(document.getElementById("msg").textContent +
+           "\\nThis panel is over 30 minutes old, so the request was not re-run. " +
+           "Ask again in chat and it will bind without asking.", "ok");
+      return;
+    }
+
+    if (data.original_request) {
+      // Quoting the request verbatim is the point of the feature: "continue" alone left
+      // the model to guess what it was continuing. The circuit breaker matters as much --
+      // without it a save that lands under a key the next lookup misses becomes an
+      // endless park / pick / re-run loop, with the panel reappearing every time.
+      tell(what + " Now re-run my original request exactly as I gave it: \\u201c" +
+           data.original_request + "\\u201d. If \\u201c" + data.description +
+           "\\u201d parks AGAIN after this, stop and tell me the save did not take" +
+           (key ? " (it was stored under key \\u201c" + key + "\\u201d)" : "") +
+           " \\u2014 do not open the picker for it a second time.");
+    } else {
+      tell(what + " Continue building the chart with it.");
+    }
+  }
+
+  document.getElementById("nope").addEventListener("click", function () {
+    if (done) { return; }
+    done = true;
+    // Stores NOTHING. An abandoned pick must leave no trace, or a shrug today becomes a
+    // remembered decision that every future chat inherits.
+    document.getElementById("go").disabled = true;
+    document.getElementById("nope").disabled = true;
+    note("Nothing saved. Telling the chat to stop and ask you.", "ok");
+    tell("None of the candidates are right for \\u201c" + data.description +
+         "\\u201d. Do not bind anything, do not guess, and do not retry the request. " +
+         "Ask me how to proceed.");
+  });
+
   document.getElementById("go").addEventListener("click", function () {
     if (!chosen || done) { return; }
     document.getElementById("go").disabled = true;
@@ -588,14 +663,12 @@ if HTTP_ENABLED:
           return;
         }
         done = true;
+        var key = "";
+        try { key = (res.structuredContent || {}).key || ""; } catch (e) { key = ""; }
         note("Saved. " + chosen + " is now bound to \\u201c" + data.description +
-             "\\u201d and will not be asked again.", "ok");
-        // Hand back to the model, or the operator has to retype the answer they just
-        // clicked. `role: user` because it is the operator's decision, not the server's.
-        send({jsonrpc: "2.0", id: nextId++, method: "ui/message",
-              params: {role: "user", content: {type: "text",
-                text: "I picked " + chosen + " for \\u201c" + data.description +
-                      "\\u201d and it is saved. Continue building the chart with it."}}});
+             "\\u201d and will not be asked again." +
+             (key ? "\\nStored under key: " + key : ""), "ok");
+        handBack(chosen, key);
       })
       .catch(function (err) {
         note("Could not save: " + err, "err");
@@ -642,7 +715,9 @@ if HTTP_ENABLED:
     @mcp.tool(app=AppConfig(resource_uri=_PICKER_URI, visibility=["app", "model"]),
               meta={"ui/resourceUri": _PICKER_URI})
     def pick_series(ctx: Context, base_descriptor: str, applied_transform: str = "",
-                    formula: str = "", sa_hint: str = "", freq_hint: str = "") -> ToolResult:
+                    formula: str = "", sa_hint: str = "", freq_hint: str = "",
+                    original_request: str = "",
+                    remaining_parks: int = 1) -> ToolResult:
         """Show the operator a table of candidates for a PARKED series, so they can choose.
 
         Call this ONLY when `resolve_series` parked a slot. A resolved slot has nothing to
@@ -653,12 +728,25 @@ if HTTP_ENABLED:
         afterwards — wait for their selection to come back as a message, then carry on with
         `render_chart`.
 
+        ALWAYS pass these two, or the panel cannot hand the thread back properly:
+
+        * `original_request` — the operator's request VERBATIM, as they typed it. The
+          panel quotes it back so the work resumes on a click instead of making them
+          retype what they already asked for. Paraphrasing defeats it: a re-run of your
+          summary is not a re-run of their request.
+        * `remaining_parks` — how many slots are parked in total, INCLUDING this one. With
+          three parks, three panels each resuming the request would render the chart three
+          times, twice with slots still unresolved. Pass the real count and only the last
+          panel resumes.
+
         Columns are the ones that settle a choice by eye: who publishes it, when it starts,
         the LIVE end date (a stale one is how a discontinued series announces itself),
         observation count and frequency.
         """
         out = lane.pick_series(base_descriptor, applied_transform, formula,
-                               sa_hint, freq_hint)
+                               sa_hint, freq_hint,
+                               original_request=original_request,
+                               remaining_parks=remaining_parks)
         n = len(out.get("candidates") or [])
         if out.get("status") == "resolved":
             summary = (f"{base_descriptor!r} did not need a choice — it resolved to "

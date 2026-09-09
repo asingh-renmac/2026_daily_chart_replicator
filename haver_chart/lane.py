@@ -291,7 +291,8 @@ def resolve_one(base_descriptor: str, applied_transform: str = "", formula: str 
 
 
 def pick_series(base_descriptor: str, applied_transform: str = "", formula: str = "",
-                sa_hint: str = "", freq_hint: str = "", candidate_n: int = 5) -> dict:
+                sa_hint: str = "", freq_hint: str = "", candidate_n: int = 5,
+                original_request: str = "", remaining_parks: int = 1) -> dict:
     """Candidates for ONE parked slot, enriched from DLX, for the picker panel (§16).
 
     Separate from `resolve_series` on purpose, and the separation IS the design. A UI
@@ -309,6 +310,13 @@ def pick_series(base_descriptor: str, applied_transform: str = "", formula: str 
     Costs one metadata call per candidate (~200 ms, cached per process). Bounded by
     `candidate_n` because this runs while the operator waits, on the system whose
     characteristic failure is a hang.
+
+    `original_request` and `remaining_parks` exist so the panel can hand the thread back
+    (D15). Saving a binding and then making the operator retype the request they already
+    made is the kind of small indignity that stops a feature being used, so the panel
+    quotes the request verbatim on submit. `remaining_parks` is what keeps that from
+    firing three times on a three-park request and rendering three partial charts: only
+    the LAST panel re-runs, the earlier ones say "keep going".
 
     Read-only. Nothing here writes to a store; `remember_binding` does that, after the
     operator has actually chosen.
@@ -340,6 +348,12 @@ def pick_series(base_descriptor: str, applied_transform: str = "", formula: str 
             "reason": out.get("reason") or "",
             "applied_transform": applied_transform,
             "formula": formula,
+            "original_request": (original_request or "").strip(),
+            "remaining_parks": max(1, int(remaining_parks or 1)),
+            # Stamped server-side, never trusted from the panel. A picker sitting in
+            # scroll-back is still fully live HTML, so a click on a panel from an hour ago
+            # would otherwise re-run an hour-old request as if it were fresh (D16).
+            "issued": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "candidates": rows}
 
 
@@ -371,6 +385,7 @@ def remember_binding(base_descriptor: str, code_at_db: str,
     return {"stored": True, "operator": CHAT.operator_identity()[0],
             "description": base_descriptor, "code": code,
             "dlx_descriptor": str(meta.get("descriptor") or ""),
+            "key": entry.get("key", ""),
             "store": str(CHAT.store_path()), "added": entry["added"]}
 
 
