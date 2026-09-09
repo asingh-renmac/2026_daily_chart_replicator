@@ -3204,3 +3204,95 @@ no widget fixes.
   make from a throwaway query.
 * Does the teammate-facing metadata connector need any of this, or is it acceptable that
   guards exist only on the operator's own host?
+
+---
+
+## 18. The 2026-09-09 outage: a reboot the supervision cannot survive
+
+Three lanes went to 502 at 03:37 and stayed down until 07:18 — **3 hours 48 minutes**,
+recovered only because a human signed in. Detection worked perfectly. Recovery does not
+exist. Evidence from `scripts/avd_reboot_forensics.ps1`, run on the host afterwards.
+
+### 18.1 It was not our nightly, and not a weekly schedule
+
+Windows Update, and it rebooted the box **twice**:
+
+| Time (ET) | Event |
+|---|---|
+| 03:00:02 | Update client starts .NET Security Update KB5126052 |
+| 03:01:29 | Security Update KB5124008 |
+| 03:30:01 | **`McpLaneNightly` runs** — our 03:30 restart, result 0x0 |
+| 03:30:24 | supervisor: `macrobond-data RESTARTED (killed 2)` |
+| 03:30:30 | supervisor: `cloudflared SERVICE RESTARTED` — nightly finishes |
+| **03:30:34** | **Event 1074: `MoUsoCoreWorker.exe` restarts the computer on behalf of SYSTEM** |
+| 03:32:56 | first boot |
+| **03:35:28** | **Event 1074: `TrustedInstaller.exe` restarts it again** |
+| 03:35:43 | final boot |
+| 03:36:57 | KB5124008 and KB5126052 report success |
+| 03:37 | health watch: three lanes `OK -> FAIL`, 502 |
+| **03:30:30 → 07:18:03** | **`supervisor.log` is EMPTY. The five-minute task never ran.** |
+| 07:17 | `madz` signs in over RDP |
+| 07:18:03 | supervisor starts all three lanes |
+| 07:29:22 | operator opens DLX by hand |
+| 07:37 | health watch: three lanes `FAIL -> OK` |
+
+The nightly finished **four seconds** before the reboot signal. Nothing about that is
+robust; it is luck. Had the update landed thirty seconds earlier it would have killed the
+supervisor mid-restart.
+
+### 18.2 The actual defect: an interactive task cannot run with nobody logged in
+
+`McpLaneEnsure` and `McpLaneNightly` are registered as `madz` with
+**`LogonType = Interactive`**. Such a task is *skipped* when the user is not signed in. A
+reboot leaves exactly that state, so the five-minute ensure-up — the mechanism whose whole
+job is to notice a dead lane and start it — did not fire once in nearly four hours. The
+empty `supervisor.log` is the proof, and the 07:18:03 entry one minute after the 07:17
+logon shows it worked the instant it was allowed to.
+
+This is not a bug in the supervisor. It follows from the deliberate choice to run lanes in
+an interactive session because DLX refuses non-interactive accounts. What was never
+designed is **restoring the session**. The architecture quietly assumed the session
+persists, and a patch reboot is the ordinary event that breaks the assumption.
+
+### 18.3 What did work, and is worth keeping
+
+* **`cloudflared` as a service** came back by itself (`Auto`, `LocalSystem`). That is why
+  the symptom was a clean 502 rather than a DNS or connection failure — the tunnel was up
+  and the origin was dead, which is precisely the distinction the watchdog needs. The
+  2026-09-08 migration paid for itself in under 24 hours.
+* **`McpHealthWatch` runs as SYSTEM** (`LogonType = ServiceAccount`), so unlike the other
+  two it *did* run throughout, and alerted in seven minutes.
+* **Ensure self-heals on logon** — one minute, unprompted.
+
+So of the three supervision tasks, the only one that survived the outage is the only one
+not tied to the interactive session. That is the whole lesson in one line.
+
+### 18.4 Two anomalies, not yet explained
+
+**A successful pull at 07:22 predates the DLX window opening at 07:29.** `last_pull` for
+`haver-data` is `11:22:08Z`, and `last_pull` is stamped on success only. There is no DLX
+*service* on the host, so either the data path does not need the desktop window after all,
+or a DLX process existed earlier and was replaced. If the window is unnecessary, an
+unattended recovery is materially simpler. Worth one controlled test rather than an
+assumption in either direction.
+
+**The forensics script initially reported "no health watch state"** because it looked for
+`health_state.json` when the files are `mcp_health_state.json` and `mcp_health.jsonl`. A
+diagnostic that says "nothing here" about files sitting beside it is worse than no
+diagnostic. Fixed, and recorded because the same class of error would be invisible in a
+real incident.
+
+### 18.5 Options
+
+* **Restore the session automatically** (auto-logon, ideally via the LSA-secret route
+  rather than a plaintext registry password), then let `Ensure` do what it already does
+  correctly. This is the only option that closes the gap; it needs a decision about
+  storing a credential, and AVD policy may forbid it.
+* **Tell the operator precisely what is wrong.** The health watch cannot fix a reboot, but
+  it can recognise one: recent `LastBootUpTime` plus no interactive session is a distinct
+  state from "a lane crashed", and deserves a distinct alert — *"the AVD rebooted at
+  03:35 and nobody is signed in; the lanes cannot start until someone connects"*. Cheap,
+  safe, and turns a confusing 502 into an instruction. Worth doing whether or not
+  auto-logon happens.
+* **Make the nightly aware of a pending reboot**, so it does not do work that is about to
+  be discarded — and, more importantly, is not interrupted halfway.
