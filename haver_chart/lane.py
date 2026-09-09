@@ -17,10 +17,12 @@ from __future__ import annotations
 
 import html as _html
 import os
+import queue as _queue
 import re
 import shutil
 import sys
 import threading
+import time
 import uuid
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -325,8 +327,36 @@ def resolve_one(base_descriptor: str, applied_transform: str = "", formula: str 
 _META_LOCK = threading.Lock()
 # Guards DLX itself, not the cache. Separate locks on purpose: a cache HIT must never wait
 # behind somebody else's 1.7s DLX call.
+#
+# Held around EVERY Haver touch, catalogue search included, not just metadata. Once a
+# background thread warms pages ahead of the operator there are genuinely two callers, and
+# "six concurrent calls hang DLX" (§19.2) is not a rule that only applies to the calls that
+# were convenient to lock.
 _DLX_META_LOCK = threading.Lock()
 _META_TTL_HOURS = 24.0
+
+# Foreground = an operator is watching a spinner. The background warmer yields to it, so
+# prefetching can never make the thing being waited on slower. A counter rather than a
+# flag: two panels can be open at once.
+_FG_LOCK = threading.Lock()
+_fg_active = 0
+
+
+def _fg_enter() -> None:
+    global _fg_active
+    with _FG_LOCK:
+        _fg_active += 1
+
+
+def _fg_exit() -> None:
+    global _fg_active
+    with _FG_LOCK:
+        _fg_active = max(0, _fg_active - 1)
+
+
+def _fg_busy() -> bool:
+    with _FG_LOCK:
+        return _fg_active > 0
 _meta_cache: Optional[dict] = None
 _meta_warned = False
 
@@ -417,8 +447,11 @@ def _resolve_pool(base_descriptor: str, applied_transform: str, formula: str,
     hit = _RESOLVE_MEMO.get(key)
     if hit is not None:
         return hit
-    out = resolve_one(base_descriptor, applied_transform, formula, sa_hint, freq_hint,
-                      candidate_n=pool_n)
+    # Under the DLX lock: the catalogue search reaches Haver too, and with a background
+    # warmer running there is now a second thread that could be inside it.
+    with _DLX_META_LOCK:
+        out = resolve_one(base_descriptor, applied_transform, formula, sa_hint, freq_hint,
+                          candidate_n=pool_n)
     if len(_RESOLVE_MEMO) >= _RESOLVE_MEMO_MAX:
         _RESOLVE_MEMO.clear()         # crude, but a picker memo has no business growing
     _RESOLVE_MEMO[key] = out
@@ -474,8 +507,67 @@ def _enrich_and_order(out: dict, base_descriptor: str, sa_hint: str,
     return shown, target, note
 
 
+# ───────────────────── warming the pages behind the first one ───────────────────────
+#
+# The panel also prefetches, by calling `enrich_page` for the series it has not shown yet.
+# That was not enough on 2026-09-09: an operator spent five minutes on series one and
+# still met a progress bar on series three, so at most one background call had been
+# delivered. A panel's background work depends on the chat host choosing to forward tool
+# calls once the model's turn has ended, and nothing in the protocol promises it will.
+#
+# This does the same warming server-side, where no host is involved. It writes only to the
+# caches, so whichever request eventually asks for a page -- the panel's prefetch or the
+# operator walking onto it -- finds the DLX work already done.
+#
+# ONE worker, because DLX will not take concurrent callers, and it yields to any
+# foreground request so warming a page nobody is looking at can never delay one somebody
+# is.
+_PREFETCH_Q: "_queue.Queue" = _queue.Queue()
+_prefetch_thread: Optional[threading.Thread] = None
+_PREFETCH_LOCK = threading.Lock()
+
+
+def _prefetch_loop() -> None:
+    while True:
+        job = _PREFETCH_Q.get()
+        try:
+            desc, transform, formula, sa_hint, freq_hint, candidate_n = job
+            while _fg_busy():
+                time.sleep(0.25)
+            t0 = time.perf_counter()
+            enrich_page(desc, transform, formula, sa_hint, freq_hint, candidate_n,
+                        _foreground=False)
+            print(f"[picker] warmed {desc!r} in {time.perf_counter() - t0:.1f}s",
+                  file=sys.stderr, flush=True)
+        except Exception as exc:
+            # A cold page is slow, not broken: the operator's own request will fetch it.
+            # Logged rather than swallowed, because a warmer that silently never warms is
+            # exactly the failure this whole mechanism exists to correct.
+            print(f"[picker] warm FAILED: {type(exc).__name__}: {exc}",
+                  file=sys.stderr, flush=True)
+        finally:
+            _PREFETCH_Q.task_done()
+
+
+def warm_pages(descriptors: list, applied_transform: str = "", formula: str = "",
+               sa_hint: str = "", freq_hint: str = "", candidate_n: int = 5) -> int:
+    """Queue descriptors to be enriched into the caches, in the background. Returns count."""
+    global _prefetch_thread
+    with _PREFETCH_LOCK:
+        if _prefetch_thread is None or not _prefetch_thread.is_alive():
+            _prefetch_thread = threading.Thread(target=_prefetch_loop, daemon=True,
+                                                name="picker-prefetch")
+            _prefetch_thread.start()
+    n = 0
+    for d in descriptors:
+        _PREFETCH_Q.put((d, applied_transform, formula, sa_hint, freq_hint, candidate_n))
+        n += 1
+    return n
+
+
 def enrich_page(base_descriptor: str, applied_transform: str = "", formula: str = "",
-                sa_hint: str = "", freq_hint: str = "", candidate_n: int = 5) -> dict:
+                sa_hint: str = "", freq_hint: str = "", candidate_n: int = 5,
+                _foreground: bool = True) -> dict:
     """Enriched, SA-ordered rows for ONE descriptor — what a tab needs when opened.
 
     The panel holds each page blank until this returns for that page, so the operator
@@ -485,9 +577,22 @@ def enrich_page(base_descriptor: str, applied_transform: str = "", formula: str 
     """
     base_descriptor = _clean_descriptor(base_descriptor)
     pool_n = max(candidate_n * 3, 12)
-    out = _resolve_pool(base_descriptor, applied_transform, formula, sa_hint, freq_hint,
-                        pool_n)
-    shown, target, note = _enrich_and_order(out, base_descriptor, sa_hint, candidate_n)
+    t0 = time.perf_counter()
+    if _foreground:
+        _fg_enter()
+    try:
+        out = _resolve_pool(base_descriptor, applied_transform, formula, sa_hint,
+                            freq_hint, pool_n)
+        shown, target, note = _enrich_and_order(out, base_descriptor, sa_hint, candidate_n)
+    finally:
+        if _foreground:
+            _fg_exit()
+    if _foreground:
+        # Timed and logged because "why did series three still spin" could not be answered
+        # from the logs the first time it was asked. A warm hit and a cold fetch look
+        # identical to the operator except in seconds, so the seconds are what to record.
+        print(f"[picker] enrich_page {base_descriptor!r} "
+              f"in {time.perf_counter() - t0:.1f}s", file=sys.stderr, flush=True)
     return {"description": base_descriptor,
             "sa_target": target,
             "sa_note": note,
@@ -541,6 +646,13 @@ def pick_series_pages(descriptors: list, applied_transform: str = "", formula: s
                          "candidate_count": len(out.get("candidates") or []),
                          "sa_target": target, "sa_note": note})
         pages.append(page)
+
+    # Started AFTER page one is enriched, never before: the warmer and the first page
+    # share one DLX, and letting them compete would push back the only page the operator
+    # is currently waiting on.
+    if len(cleaned) > 1:
+        warm_pages(cleaned[1:], applied_transform, formula, sa_hint, freq_hint,
+                   candidate_n)
 
     return {"pages": pages,
             "applied_transform": applied_transform,
