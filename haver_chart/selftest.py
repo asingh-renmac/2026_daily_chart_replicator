@@ -694,6 +694,7 @@ else:
           "the parked result says call pick_series ONCE with all parked descriptors")
     check("enrich_page" in _parked and "belongs to the panel" in _parked,
           "and warns the model off enrich_page, which is the panel's tool")
+    import inspect as _inspect
     check("descriptors" in str(_inspect.signature(lane.pick_series_pages)),
           "lane.pick_series_pages takes a LIST of descriptors")
     _pages_src = _inspect.getsource(lane.pick_series_pages)
