@@ -699,10 +699,15 @@ else:
     # spent 20s of DLX time to do it.
     check("enrich_page" in _srv["tools"],
           "enrich_page is registered as a tool the panel can call")
-    _enrich_app = getattr(_srv["tools"]["enrich_page"], "app", None)
-    check(_enrich_app is not None and list(getattr(_enrich_app, "visibility", []) or []) == ["app"],
+    # Asserted on the decorator, not on the listed Tool: `list_tools()` returns the wire
+    # shape, which does not carry AppConfig back out, so introspecting it reads None for
+    # an app-only tool and an app-and-model one alike — a check that cannot fail is not a
+    # check. `visibility` is also easy to put on `tool()` instead of `AppConfig`, where it
+    # raises at import; the decorator text is the thing worth pinning.
+    _srv_src = Path(server.__file__).read_text(encoding="utf-8")
+    check('AppConfig(visibility=["app"]))\n    def enrich_page' in _srv_src,
           "and it is app-only, never offered to the model",
-          f"visibility is {getattr(_enrich_app, 'visibility', None)!r}")
+          "a model calling it would spend 20s of DLX time on rows it cannot display")
 
     import inspect as _inspect
     check("descriptors" in str(_inspect.signature(lane.pick_series_pages)),
