@@ -3479,47 +3479,63 @@ pass` swallowed it — so the probe reported `entries=0` on two consecutive runs
 harmless instead made a broken cache invisible. It now warns once per process to stderr:
 slow is acceptable, silent is not.
 
-### 19.4 One panel, tabs, one Save
+### 19.4 One panel, one series at a time, one Save
 
 Five parked slots used to mean five `pick_series` calls and five panels, each with its
 own ~20s wait, coordinated by telling the model "resolve the others FIRST and do not
 render anything yet" (D15) so only the last panel resumed the request. `pick_series` now
-takes a LIST and renders one panel with a tab per slot, one Save, one hand-back — and
-D15's coordination simply stops existing, because there is only ever one panel.
+takes a LIST and renders ONE panel, one Save, one hand-back — and D15's coordination
+simply stops existing, because there is only ever one panel.
 
-Enrichment is per-tab. Enriching five up front is ~102s in a single tool call, slower
+That panel is a **linear wizard**: "Series N of M", one choice on screen, Back and Next,
+with Next becoming Save on the last step rather than sitting beside it. Three layouts
+were mocked up (tabs, wizard, stacked accordion) and the operator chose the wizard for
+having nothing competing with the decision in front of them. Its one real cost — that
+returning to series 2 means stepping back through everything between — is bought off by
+making the step dots clickable, which changes no layout and adds no second decision.
+Reaching the last step with gaps behind you says how many are still open, rather than
+greying Save out with no explanation, which is the only way a wizard leaves someone
+stuck.
+
+Enrichment is per-series. Enriching five up front is ~102s in a single tool call, slower
 than the thing it replaces; and resolving all five up front adds ~4s each before the
-first tab's metadata even starts. So the batch call resolves and enriches page one only,
-and `enrich_page` (app-only, never offered to the model) does the rest as tabs open, one
-ahead of the operator.
+first series' metadata even starts. So the batch call resolves and enriches series one
+only, and `enrich_page` (app-only, never offered to the model) does the rest as steps are
+reached, prefetching one ahead of the operator.
 
 Measured end to end (`scripts/time_picker_pages.py`):
 
 | | time to first panel | all five |
 |---|---|---|
 | five separate panels (before) | ~20s, then 4 more waits | 101.85s |
-| tabs, cold cache | 20.71s | 103.42s |
-| tabs, warm cache, fresh process | **4.32s** | 21.13s |
+| wizard, cold cache | 20.71s | 103.42s |
+| wizard, warm cache, fresh process | **4.32s** | 21.13s |
 
 The warm row is the one that matters: it is a fresh process reading the disk cache, which
 is what an operator meets after the nightly restart.
 
 ### 19.5 Choices the operator made explicitly
 
-**Hide, then be honest.** The host mounts the frame when the tool is CALLED, not when it
-returns, so "render only when ready" cannot be done by asking the host to wait — it is
-done from inside, by reporting no height. The panel stays collapsed for a 1400ms grace
-period; if candidates land inside it the panel simply appears, complete. If not, it
-expands into a progress state rather than a blank space, because twenty seconds of
-nothing reads as broken exactly as strongly as twenty seconds of "Waiting". The progress
-bar is asymptotic and never reaches 100%: a bar that fills and then sits there is a lie
-the operator only has to catch once.
+**Say what is happening, from the first paint.** Two options were mocked up and the
+operator picked the explicit one. The host mounts the frame when the tool is CALLED, not
+when it returns, so "render only when ready" was available — it is done from inside, by
+reporting no height until candidates land — and it was deliberately NOT taken. With a
+cold DLX lookup at ~20s, a frame that hides itself leaves an empty space, and "nothing"
+is what made a working tool look broken to begin with. So the panel announces the wait
+immediately and keeps reporting it, and every later series in the wizard gets the same
+treatment while its own metadata loads. The bar is asymptotic and never reaches 100%: one
+that fills and then sits there is a lie the operator only has to catch once.
+
+An interim build (commit `ab1afb2`) shipped the grace-period version before the mockups
+were reviewed. Recorded because the self-test still carries a check that `GRACE_MS` is
+ABSENT — that check exists to stop the hidden-frame behaviour being reintroduced by
+someone who finds the idea appealing without knowing it was already rejected on purpose.
 
 **Hold each page until its own metadata is in**, rather than painting in similarity order
 and re-sorting when SA data lands. A list that reorders while being read is worse than
 one that arrives a moment later.
 
-**Three states per tab, not two.** A chosen ticker, an explicit "none of these", and
+**Three states per series, not two.** A chosen ticker, an explicit "none of these", and
 undecided. Collapsing the last two would let Save fire on a series nobody had opened. A
 refused `remember_binding` stops the save where it is rather than pressing on, because
 saving three of five and resuming builds a chart nobody approved.
