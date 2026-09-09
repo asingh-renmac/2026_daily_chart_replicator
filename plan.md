@@ -3553,7 +3553,38 @@ introspects the wire shape reads `None` for an app-only tool and an app-and-mode
 alike. That check is pinned to the decorator text instead; a check that cannot fail is
 not a check.
 
-### 19.7 Known flake
+### 19.7 The prefetch only went one deep (found in use, 2026-09-09)
+
+Reported from a live five-series panel: series 5 showed a progress bar and searched the
+catalogue on arrival, and so did 3 and 4. Only the first Next was instant.
+
+`prefetchNext()` `return`ed after queueing the first unenriched page, and was called
+exactly once, from the tool-result handler. So series 2 was prefetched and nothing else
+ever was. Every later series was fetched when the operator walked onto it — the cost this
+whole section was written to remove, moved rather than eliminated.
+
+The cause was a rule applied at the wrong boundary, and the comment in the code said so
+out loud: *"Only one ahead: fetching all five up front is the 101-second version."* Two
+different things wearing one phrase. Fetching five **before the panel appears** is ~102s
+and is still refused — `pick_series_pages` enriches only the first, which is what keeps
+time-to-first-panel at 4.3s warm. Fetching five **in the background after the panel is
+up** costs the operator nothing: they are reading series one, and that reading time is
+the only free time in the interaction.
+
+Now every remaining series is queued the moment the first is on screen. Still strictly
+one DLX call at a time — that constraint is not negotiable (§19.2) — but the queue drains
+during reading rather than during navigation. Navigating marks a series urgent and moves
+it to the FRONT of the queue, so jumping to series 5 does not wait behind the background
+prefetch of 2, 3 and 4.
+
+The holding message was reworded at the same time. It had explained that SA ordering
+needs the metadata and the rows are held rather than re-sorted — true, and still the
+behaviour, but it read as an excuse for a delay it did not cause, and it answered a
+question about internal ordering rules instead of the one the operator had: is this stuck,
+and how long. It now says the series is still loading, that they are fetched one at a time
+because DLX will not answer parallel requests, and how many others are outstanding.
+
+### 19.8 Known flake
 
 `the DLX stamp is not the render stamp` (§14 of the self-test) compares two second-
 resolution timestamps for inequality and fails when a render and a DLX note land in the
