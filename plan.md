@@ -3630,3 +3630,101 @@ worth recording.
 resolution timestamps for inequality and fails when a render and a DLX note land in the
 same second. Seen once on 2026-09-09 and passing on re-run. Not fixed here; noted so the
 next person does not chase it as a regression.
+
+## 20. `sa(...)` — running X-13 ourselves (2026-09-10)
+
+### 20.1 The formula that could not be parsed
+
+A Haver chart titled `sa(diff%(R622))` cannot be replicated at all today. `sa` is not in
+the parser's function grammar, so `formula_mnemonics` raises `NeedPin: 'sa' is not in the
+pinned map` — and that call is the FIRST thing `resolve_slot`'s formula path makes. The
+slot parks with "formula parse/unsupported" before a single ticker is confirmed, so the
+operator sees a park with no candidates and nothing to choose between. `diff%(R622)` on
+its own has always parsed; only the outer wrapper breaks it.
+
+### 20.2 The example is not the mistake it looks like
+
+`R622` is a DLX local alias for `jcsmhpm@usna` — "Household Consumption Expenditures:
+Hospitals  Price Index (SA, 2017=100)", double space and all. The base series is
+**already seasonally adjusted by BEA**, so `sa(diff%(X))` is not a sloppy ordering of
+`diff%(sa(X))`: it is stripping RESIDUAL seasonality out of an already-adjusted series'
+month-over-month change. Measured on the real data, the adjustment moves the standard
+deviation of the MoM from 0.2358 to 0.2301 — 2.4% — which is exactly the size of thing
+a residual-seasonality strip should be.
+
+That settles the design question the house SA rule appears to answer. The rule says
+"apply SA to LEVELS, never to growth rates", and rewriting the formula to `diff%(sa(X))`
+would honor it — but the two are different operations here (r=0.9855, mean absolute
+difference 0.031pp, max 0.12pp on this series), and quietly substituting one for the
+other would plot a different line while claiming to replicate the chart. **We honor what
+is written.** The wrong-order case is real, but it is the operator's call to make, and
+the diagnostic in `interp_log` is what tells them it is theirs.
+
+### 20.3 What was decided, explicitly
+
+| Question | Choice |
+|---|---|
+| `sa(diff%(X))` — honor or reorder? | **Honor literally**, log a diagnostic, stamp the subtitle |
+| Estimation sample | **Bounded**: display window back `SA_LOOKBACK_YEARS` (5), not all history |
+| log / trading-day defaults | **Conservative**: additive, no trading day, overridable in the formula |
+
+The bounded sample has a consequence worth stating plainly: **the plotted values now
+depend on the plot window**, because moving `sample_start` moves the estimation sample.
+Full history would have been window-independent and was free — `g4_lib.pull` already
+fetches from 1959 and `finish` slices to the window last. Bounded was chosen anyway, so
+the lookback is a named constant rather than a number buried in the evaluator.
+
+### 20.4 Two failures found by building it
+
+**X-13's outlier detection breaks on growth rates.** `outlier=True` on the MoM of
+`jcsmhpm@usna` over 2010-2026 fails outright ("No columns to parse from file");
+`outlier=False` succeeds. A COVID-era growth rate has more level shifts than the
+automatic regARIMA can place. `_x13_adjust` therefore runs two passes, the same shape as
+the wrapper's existing trading-day retry, and records which one succeeded. Defaulting
+detection off instead would have given it up on level series, where it works fine.
+
+**The wrapper never raises.** `seasonal_adjust` degrades to classical decomposition and
+logs a warning — right for a batch script, wrong for a lane whose subtitle would go on
+saying "seasonally adjusted (X-13)" over numbers X-13 never produced. `_FallbackWatch`
+catches that warning and turns it into a `TransformError`. This fired on the very first
+real run, which is how the outlier failure above was found rather than shipped.
+
+### 20.5 Provenance is not optional
+
+An `sa()` anywhere in the tree stamps the label "seasonally adjusted (X-13)" — before
+the BinOp bail-out, so even `sa(A)+sa(B)`, which has no single outer transform and would
+otherwise be unlabelled, still says it. The inner transform is kept: `sa(diff%(X))`
+labels as "% change, period-over-period, seasonally adjusted (X-13)", because stamping
+alone would drop the "% change" and the chart would stop saying what it plots.
+
+`PlotSeries.sa` carries the flag into validation. Our X-13 and Haver's `sa()` are
+different implementations and cannot tie exactly, so `last_value_check` widens the
+tolerance from 0.05 to 0.25 for those lines — and writes `tolerance: ... (widened)` into
+the row, because a check that silently got weaker is worse than no check at all: the
+report still reads PASS.
+
+Note what is deliberately NOT wired: "seasonally adjusted" is not added to
+`TRANSFORM_PHRASES`. On a vision-read chart that phrase almost always describes how the
+SOURCE series is stored, not an instruction to adjust it, and mapping it to `sa()` would
+locally re-adjust series that are already SA. `sa()` enters only through an explicit
+formula.
+
+### 20.6 The install, and a bug in the shared wrapper
+
+`econ-templates/sa/x13_seasonal_adjust.py` looked for `x13ashtml.exe`, but
+winx13html_v3-3 (July 2025, X-13 v1.1 build 62) ships **`x13as_html.exe`** with an
+underscore. On the laptop this was invisible because someone hand-copied the binary to
+`x13as.exe` back in May; on any fresh unzip `setup_x13()` raises `FileNotFoundError`.
+Fixed in econ-templates to accept both spellings — this is the exact silent-fallback
+class the function exists to prevent.
+
+The wrapper is **vendored verbatim** to `src/x13_seasonal_adjust.py`. The AVD cannot
+clone econ-templates: that repo's remote is SSH-only and the host cannot complete an SSH
+handshake to GitHub (see `scripts/avd_deploy.ps1`). `scripts/check_x13_vendor.py` and a
+self-test check make the drift loud.
+
+`scripts/avd_install_x13.ps1` installs to `C:\Users\madz\Work\asingh\tools\winx13`, with
+the Census URL and a pinned SHA256 (verified byte-identical to the laptop's copy) so the
+AVD cannot end up on a different X-13 than the one these numbers were developed against.
+It also copies the shipped binary to `x13as.exe`. `transforms._X13_CANDIDATES` already
+contains the AVD path, so the lane works whether or not `X13PATH` gets set.
