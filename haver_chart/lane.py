@@ -989,7 +989,8 @@ def health() -> dict:
 
 
 # ─────────────────────────────── validation ─────────────────────────────────
-def last_value_check(rendered: dict, printed: dict, value_tol: float = 0.05) -> list:
+def last_value_check(rendered: dict, printed: dict, value_tol: float = 0.05,
+                     sa_value_tol: float = 0.25) -> list:
     """Compare each drawn line's last value to the value the SOURCE chart prints.
 
     `printed` maps a legend label (or a unique fragment of one) to the number read off
@@ -1009,6 +1010,14 @@ def last_value_check(rendered: dict, printed: dict, value_tol: float = 0.05) -> 
         s = ps.series.dropna()
         row = {"label": ps.label, "last_date": str(s.index.max().date()),
                "reconstructed": round(float(s.iloc[-1]), 4), "printed": want}
+        # A line WE seasonally adjusted cannot tie exactly to a source chart that used
+        # Haver's sa(): different implementations of X-13 disagree in the last decimal,
+        # and on a growth rate near zero that disagreement swamps the level tolerance.
+        # Widen it and SAY SO in the row — a check that silently got weaker is worse
+        # than no check, because the report still reads PASS.
+        tol = sa_value_tol if getattr(ps, "sa", False) else value_tol
+        if tol != value_tol:
+            row["tolerance"] = f"{tol} (widened — locally X-13 adjusted)"
         if want is None:
             row["check"] = "skipped — no printed value supplied"
         else:
@@ -1019,7 +1028,7 @@ def last_value_check(rendered: dict, printed: dict, value_tol: float = 0.05) -> 
                 with quiet_stdout():
                     V.check_last_value(
                         ps.series, float(want), pd.Timestamp(rendered["end"]),
-                        rendered.get("_freq") or "M", value_tol, label=ps.label)
+                        rendered.get("_freq") or "M", tol, label=ps.label)
                 row["check"] = "PASS"
             except V.LastValueMismatch as exc:
                 row["check"] = f"FAIL — {exc}"

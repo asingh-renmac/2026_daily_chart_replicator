@@ -221,7 +221,13 @@ def resolve_series(
         "Philly Fed Mfg Business Outlook: Current Activity Diffusion Index").
       * `formula` — if the chart prints a formula, pass it VERBATIM ("zs(yryr%(IP))").
         Do not paraphrase it into words; the parser understands Haver's own syntax and
-        paraphrasing loses the nesting.
+        paraphrasing loses the nesting. This includes `sa(...)`, which is run locally
+        through X-13ARIMA-SEATS: pass `sa(diff%(X))` EXACTLY as written and do not
+        "fix" it to `diff%(sa(X))`. Those are different operations — when X is already
+        SA at source, the outer sa() strips RESIDUAL seasonality from the growth rate,
+        and reordering it would plot a different line under the same name. Any chart
+        with an sa() is stamped "seasonally adjusted (X-13)" so the reader can see the
+        adjustment is ours rather than the source agency's.
       * `applied_transform` — only for a words-only chart ("% Change - Year to Year",
         "3-month moving average", "Z-Score"). Haver's aggregation/units line
         ("Avg, % p.a.", "Sum, Mil.$", "EOP, Index") is NOT a transform: it describes

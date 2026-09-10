@@ -26,6 +26,7 @@ caller can route the chart to Teams and park it — never a guessed formula.
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, field
 from typing import Callable, Optional, Union
@@ -136,6 +137,7 @@ class Func:
     args: list                      # [node, ...]; n (if any) is an int literal arg
     index_base: Optional[str] = None
     index_value: Optional[float] = None
+    opts: dict = field(default_factory=dict)   # SA(...) keyword overrides
 
 
 @dataclass
@@ -151,8 +153,38 @@ Node = Union[Series, Num, Func, BinOp]
 _RE_DIF = re.compile(r"^DIF([FVA])(%|L)?(C)?$")
 _RE_YRYR = re.compile(r"^YRYR(%|L)?$")
 _RE_MOV = re.compile(r"^MOV([VAT])(C)?$")
-_SIMPLE_FUNCS = {"INDEX", "ZS", "LN", "ABS", "NA2Z", "Z2NA", "SETNA", "FX", "HP"}
+_SIMPLE_FUNCS = {"INDEX", "ZS", "LN", "ABS", "NA2Z", "Z2NA", "SETNA", "FX", "HP", "SA"}
 _OUT_OF_SCOPE = {"YTD", "DYTD"}     # named but not computed → NeedPin (§4.3a)
+
+# ── SA(...) — X-13ARIMA-SEATS, run locally ──────────────────────────────────────
+# Haver writes `sa(...)` into formulas and we could not parse it at all, so any read
+# carrying one parked at `formula_mnemonics` before a ticker was ever confirmed.
+#
+# Three decisions are baked in here, all deliberate:
+#
+# LITERAL ORDER. `sa(diff%(X))` adjusts the GROWTH RATE, which the house SA rule warns
+# against — but it is not always a mistake. When X is already SA at source (BEA's
+# hospitals price index, say) the outer sa() is stripping RESIDUAL seasonality out of
+# the month-over-month, and rewriting it to `diff%(sa(X))` would silently plot a
+# different line while claiming to replicate the chart. We honor what is written and
+# emit a diagnostic instead of second-guessing it.
+#
+# CONSERVATIVE DEFAULTS. Additive, no trading-day regression. A growth rate or a
+# diffusion index must not be logged, and survey/financial series are not driven by
+# business-day count. Nominal levels that want the multiplicative model say so with
+# `sa(X, log=1)`.
+#
+# BOUNDED ESTIMATION SAMPLE. X-13 estimates on the display window extended back by
+# SA_LOOKBACK_YEARS rather than on all history to 1959. NOTE the consequence: the
+# plotted values now DEPEND ON THE PLOT WINDOW, because moving `sample_start` moves the
+# estimation sample. That is the price of a bounded sample and it is why the lookback
+# is a named constant rather than a number buried in the evaluator.
+_SA_OPTS = {"log", "trading", "outlier", "lookback"}
+SA_LOOKBACK_YEARS = 5
+# X-13's own floor (mirrors the wrapper's MIN_OBS_*): below this it falls back to
+# classical decomposition, so a short window auto-extends its lookback to clear it
+# rather than quietly getting the inferior method.
+SA_MIN_OBS = {"M": 36, "Q": 24}
 
 
 def _classify_func(word: str):
@@ -285,6 +317,8 @@ class _Parser:
         self._expect("LPAREN")
         if name == "INDEX":
             return self._index_args(name, pct, log, centered)
+        if name == "SA":
+            return self._sa_args(name, pct, log, centered)
         args = []
         if self._peek()[0] != "RPAREN":
             args.append(self._expr())
@@ -308,12 +342,146 @@ class _Parser:
         return Func(name, pct, log, centered, [arg],
                     index_base="".join(base_parts), index_value=value)
 
+    def _sa_args(self, name, pct, log, centered):
+        """SA(expr) or SA(expr, KEY=NUMBER, ...) — X-13 seasonal adjustment.
+
+        The bare `SA(expr)` form is the one Haver itself writes, so it has to parse
+        untouched; the keyword form is an escape hatch Haver would never emit. Values
+        are numbers because that is all the tokenizer yields: booleans are 0/1.
+        """
+        arg = self._expr()
+        opts = {}
+        while self._peek()[0] == "COMMA":
+            self._next()
+            key = self._expect("WORD")[1].lower()
+            if key not in _SA_OPTS:
+                raise ParseError(
+                    f"SA: unknown option {key!r} — recognized: "
+                    + ", ".join(sorted(_SA_OPTS)))
+            self._expect("EQ")
+            opts[key] = float(self._expect("NUMBER")[1])
+        self._expect("RPAREN")
+        return Func(name, pct, log, centered, [arg], opts=opts)
+
 
 def parse(formula: str) -> Node:
     """Parse a Haver formula string into an AST (raises ParseError / NeedPin)."""
     if formula is None or not formula.strip():
         raise ParseError("empty formula")
     return _Parser(_tokenize(formula)).parse()
+
+
+# --------------------------------------------------------------------------- #
+# X-13 adapter (§4.7)
+# --------------------------------------------------------------------------- #
+#
+# The wrapper itself is econ-templates/sa/x13_seasonal_adjust.py, VENDORED verbatim to
+# src/ because the AVD host cannot clone econ-templates (its remote is SSH-only and this
+# host cannot complete an SSH handshake to GitHub — see scripts/avd_deploy.ps1). Keep
+# the copy byte-identical; scripts/check_x13_vendor.py fails when it drifts.
+
+_X13_READY = False
+_X13_CACHE: dict = {}
+
+# Where X-13 lives. X13PATH wins so a host can override without a code change; the
+# candidates cover this laptop and the AVD, whose profile root differs.
+_X13_CANDIDATES = (
+    r"C:\Users\asingh\tools\winx13\x13as",
+    r"C:\Users\madz\Work\asingh\tools\winx13\x13as",
+)
+
+
+def _x13_setup_once():
+    """Resolve + prepare the X-13 install exactly once per process."""
+    global _X13_READY
+    if _X13_READY:
+        return
+    import os
+    from pathlib import Path
+
+    import x13_seasonal_adjust as X13
+
+    d = os.environ.get("X13PATH") or next(
+        (c for c in _X13_CANDIDATES if Path(c).is_dir()), None)
+    if d is None:
+        raise NeedPin("SA", "X-13 is not installed — looked at X13PATH and "
+                            + ", ".join(_X13_CANDIDATES))
+    X13.setup_x13(x13_dir=d, quiet=True)
+    _X13_READY = True
+
+
+class _FallbackWatch(logging.Handler):
+    """Catch the wrapper's own warning that X-13 failed and classical ran instead.
+
+    `seasonal_adjust` never raises: it degrades to classical decomposition and logs it.
+    That is the right call for a batch script and the wrong one here, where the subtitle
+    would go on saying "seasonally adjusted (X-13)" over numbers X-13 never produced.
+    """
+
+    def __init__(self):
+        super().__init__(level=logging.WARNING)
+        self.hits: list[str] = []
+
+    def emit(self, record):
+        msg = record.getMessage()
+        if "fall" in msg.lower() or "failed entirely" in msg.lower():
+            self.hits.append(msg)
+
+
+def _x13_run(est: pd.Series, freq: str, log: bool, trading: bool, outlier: bool):
+    """One X-13 pass. Returns (series, None) or (None, why-it-fell-back)."""
+    import x13_seasonal_adjust as X13
+
+    watch = _FallbackWatch()
+    wlog = logging.getLogger(X13.__name__)
+    wlog.addHandler(watch)
+    prior = wlog.level
+    wlog.setLevel(logging.WARNING)
+    try:
+        out = X13.seasonal_adjust(pd.Series(est.values, index=est.index, name="value"),
+                                  freq=freq, trading=trading, log=log, outlier=outlier)
+    finally:
+        wlog.removeHandler(watch)
+        wlog.setLevel(prior)
+    return (None, "; ".join(watch.hits)) if watch.hits else (out, None)
+
+
+def _x13_adjust(est: pd.Series, freq: str, log: bool, trading: bool,
+                outlier: bool) -> tuple:
+    """Run X-13 on `est`; returns (series, note). Memoized on content + options.
+
+    Two passes, for the same reason the wrapper retries without trading day: automatic
+    OUTLIER detection is what actually breaks X-13 on a growth-rate input. Measured on
+    jcsmhpm@usna's month-over-month, 2010-2026 — `outlier=True` fails outright ("No
+    columns to parse from file") and `outlier=False` succeeds. A COVID-era growth rate
+    has more level shifts than the automatic regARIMA can place. Retrying is strictly
+    better than defaulting the detection off, which would give up outlier handling on
+    the level series where it works fine.
+    """
+    key = (pd.util.hash_pandas_object(est, index=True).sum(), len(est),
+           str(est.index[0]), str(est.index[-1]), freq, log, trading, outlier)
+    if key in _X13_CACHE:
+        return _X13_CACHE[key]
+
+    _x13_setup_once()
+
+    out, why = _x13_run(est, freq, log, trading, outlier)
+    note = ""
+    if out is None and outlier:
+        out, why2 = _x13_run(est, freq, log, trading, outlier=False)
+        if out is not None:
+            note = "outlier detection off (auto-detection failed on this sample)"
+        else:
+            why = f"{why} | retry without outlier detection: {why2}"
+
+    if out is None:
+        raise TransformError(
+            "SA: X-13 did not run and the wrapper fell back to classical "
+            "decomposition — " + why
+            + ". Refusing to label a classical adjustment as X-13.")
+
+    _X13_CACHE[key] = (out, note)
+    return out, note
 
 
 # --------------------------------------------------------------------------- #
@@ -465,6 +633,8 @@ class Evaluator:
             return self.fx_resolver(sub, cur), f
         if name == "HP":
             return self._ev_hp(sub), f
+        if name == "SA":
+            return self._ev_sa(sub, f, node.opts), f
 
         raise NeedPin(name)
 
@@ -490,6 +660,52 @@ class Evaluator:
         clean = sub.dropna()
         cyc, _trend = sm.tsa.filters.hpfilter(clean, lamb=1600)
         return cyc.reindex(sub.index)
+
+    def _ev_sa(self, sub: pd.Series, freq: str, opts: dict) -> pd.Series:
+        """X-13 seasonal adjustment over a bounded estimation sample (see _SA_OPTS)."""
+        if freq not in SA_MIN_OBS:
+            raise NeedPin("SA", f"X-13 adjusts monthly or quarterly series; got {freq!r}")
+
+        clean = sub.dropna()
+        if clean.empty:
+            raise TransformError("SA: series is entirely NaN")
+
+        # Estimation sample = display window extended back by the lookback, auto-widened
+        # when that is too short for X-13 to estimate on. Slicing by POSITION for the
+        # widening (rather than by another date offset) is what makes the floor exact on
+        # a series with gaps or a late inception.
+        need = SA_MIN_OBS[freq]
+        if self.window is not None:
+            years = opts.get("lookback", SA_LOOKBACK_YEARS)
+            lo = self.window[0] - pd.DateOffset(years=int(years))
+            est = clean.loc[lo:self.window[1]]
+            if len(est) < need:
+                head = clean.loc[:self.window[1]]
+                est = head.iloc[-need:] if len(head) >= need else head
+        else:
+            est = clean
+
+        if len(est) < need:
+            raise TransformError(
+                f"SA: {len(est)} {freq} observations available, X-13 needs {need}. "
+                f"Widen sample_start or drop the sa() wrapper — a shorter sample would "
+                f"silently fall back to classical decomposition.")
+
+        sa, note = _x13_adjust(
+            est, freq=freq,
+            log=bool(opts.get("log", 0)),
+            trading=bool(opts.get("trading", 0)),
+            outlier=bool(opts.get("outlier", 1)),
+        )
+        self.interp_log.append(
+            f"SA: X-13 on {len(est)} {freq} obs "
+            f"{est.index.min().date()}..{est.index.max().date()} "
+            f"(log={bool(opts.get('log', 0))}, trading={bool(opts.get('trading', 0))})"
+            + (f" [{note}]" if note else ""))
+        # Reindex to the buffered range: values outside the estimation sample are NaN,
+        # and `finish` slices to the display window anyway. The lookback guarantees the
+        # window's own left edge has the extra periods an outer diff/MA needs.
+        return sa.reindex(sub.index)
 
     def _ev_index(self, node: Func) -> tuple:
         sub, f = self.ev(node.args[0])

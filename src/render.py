@@ -265,6 +265,11 @@ class PlotSeries:
     # measured in "observations" (see build_chart._x_end_pad). Optional: callers that
     # don't set it fall back to the plotted spacing.
     freq: Optional[str] = None
+    # True when this line was seasonally adjusted BY US with X-13 rather than by the
+    # source agency. Validation reads it: our X-13 and Haver's sa() are different
+    # implementations, so a last-value comparison against a source chart can never tie
+    # exactly and has to be judged on a looser tolerance (see lane.last_value_check).
+    sa: bool = False
 
 
 @dataclass

@@ -374,8 +374,49 @@ def transform_label(formula_str: str, unit: str) -> str | None:
         node = T.parse(formula_str)
     except Exception:
         return None
+    # An SA anywhere in the tree is stamped NO MATTER WHAT the outer function is, and
+    # before the BinOp bail-out below. The point is provenance: these numbers were
+    # adjusted by us with X-13, not by the source agency, and a reader comparing against
+    # the publisher's own SA series has to be able to see that from the chart alone.
+    if _has_sa(node):
+        base = transform_label(_strip_outer_sa(formula_str), unit) if _is_outer_sa(node) \
+            else _label_of(node, unit)
+        return ", ".join(x for x in (base, SA_STAMP) if x)
     if not isinstance(node, T.Func):
         return None                       # bare Series, sum/BinOp → no single label
+    return _label_of(node, unit)
+
+
+SA_STAMP = "seasonally adjusted (X-13)"
+
+
+def _has_sa(node) -> bool:
+    """True if an SA() appears anywhere in the tree."""
+    if isinstance(node, T.Func):
+        return node.name == "SA" or any(_has_sa(a) for a in node.args)
+    if isinstance(node, T.BinOp):
+        return _has_sa(node.left) or _has_sa(node.right)
+    return False
+
+
+def _is_outer_sa(node) -> bool:
+    return isinstance(node, T.Func) and node.name == "SA"
+
+
+def _strip_outer_sa(formula_str: str) -> str:
+    """`sa(diff%(X))` → `diff%(X)`, so the inner transform still gets its own label."""
+    s = formula_str.strip()
+    inner = s[s.index("(") + 1:s.rindex(")")]
+    return inner.split(",")[0].strip() if _SA_OPT_RE.search(inner) else inner
+
+
+_SA_OPT_RE = re.compile(r",\s*(?:log|trading|outlier|lookback)\s*=", re.I)
+
+
+def _label_of(node, unit: str) -> str | None:
+    """The label for ONE function node (no SA handling — see `transform_label`)."""
+    if not isinstance(node, T.Func):
+        return None
     nums = [int(a.value) for a in node.args if isinstance(a, T.Num)]
     n = nums[0] if nums else None
     name = node.name
@@ -886,7 +927,8 @@ def render_row(row: dict, save_path: str) -> dict:
         mns = [m for m in T.formula_mnemonics(formula_str) if m in series_map]
         plotted.append(PlotSeries(label=label, series=series, axis=ax,
                                   kind=_plot_kind_of(s),
-                                  freq=_slot_freq(mns, series_map) if mns else None))
+                                  freq=_slot_freq(mns, series_map) if mns else None,
+                                  sa=_has_sa(T.parse(formula_str))))
 
     # DISPLAY left edge: never open on DEAD SPACE. A read start that predates the data
     # (2026-07-30 `_0`: read 1948 vs YPSVR from 1959) left a decade of empty panel. The DATA
