@@ -223,10 +223,13 @@ def resolve_series(
         Do not paraphrase it into words; the parser understands Haver's own syntax and
         paraphrasing loses the nesting. This includes `sa(...)`, which is run locally
         through X-13ARIMA-SEATS: pass `sa(diff%(X))` EXACTLY as written and do not
-        "fix" it to `diff%(sa(X))`. Those are different operations — when X is already
-        SA at source, the outer sa() strips RESIDUAL seasonality from the growth rate,
-        and reordering it would plot a different line under the same name. Any chart
-        with an sa() is stamped "seasonally adjusted (X-13)" so the reader can see the
+        "fix" it to `diff%(sa(X))`. Those are genuinely different lines — measured on a
+        real NSA hospital PPI they run r=0.97 with a mean gap of 0.05pp — so reordering
+        would plot one under the other's name. Note also that a chart's subtitle may
+        describe a DIFFERENT series than the one the title's formula names: a two-line
+        chart carries one subtitle, and reading it as the formula's series is how the
+        sa() on this chart was first attributed to the wrong leg. Any chart with an
+        sa() is stamped "seasonally adjusted (X-13)" so the reader can see the
         adjustment is ours rather than the source agency's.
       * `applied_transform` — only for a words-only chart ("% Change - Year to Year",
         "3-month moving average", "Z-Score"). Haver's aggregation/units line

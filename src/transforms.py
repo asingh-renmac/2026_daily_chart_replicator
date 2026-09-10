@@ -411,25 +411,36 @@ def _x13_setup_once():
 
 
 class _FallbackWatch(logging.Handler):
-    """Catch the wrapper's own warning that X-13 failed and classical ran instead.
+    """Catch the two DIFFERENT ways `seasonal_adjust` quietly changes what it did.
 
-    `seasonal_adjust` never raises: it degrades to classical decomposition and logs it.
-    That is the right call for a batch script and the wrong one here, where the subtitle
-    would go on saying "seasonally adjusted (X-13)" over numbers X-13 never produced.
+    It never raises. It degrades and logs, which is right for a batch script and wrong
+    here, where the subtitle would go on saying "seasonally adjusted (X-13)" over
+    numbers X-13 never produced. The two degradations are not equivalent:
+
+      * CLASSICAL fallback — X-13 did not run at all. Refuse: the label would lie.
+      * TRADING-DAY retry — X-13 ran, without the trading-day regression we asked for.
+        Legitimate, but `interp_log` must not go on reporting `trading=True` when the
+        run that produced the numbers had it off. That is a smaller lie, not a
+        non-lie, and it is invisible precisely when someone has bothered to ask for
+        the regression.
     """
 
     def __init__(self):
         super().__init__(level=logging.WARNING)
-        self.hits: list[str] = []
+        self.classical: list[str] = []
+        self.td_retry: list[str] = []
 
     def emit(self, record):
         msg = record.getMessage()
-        if "fall" in msg.lower() or "failed entirely" in msg.lower():
-            self.hits.append(msg)
+        low = msg.lower()
+        if "fall" in low or "failed entirely" in low:
+            self.classical.append(msg)
+        elif "retrying without trading day" in low:
+            self.td_retry.append(msg)
 
 
 def _x13_run(est: pd.Series, freq: str, log: bool, trading: bool, outlier: bool):
-    """One X-13 pass. Returns (series, None) or (None, why-it-fell-back)."""
+    """One X-13 pass. Returns (series, note, None) or (None, "", why-it-fell-back)."""
     import x13_seasonal_adjust as X13
 
     watch = _FallbackWatch()
@@ -443,7 +454,9 @@ def _x13_run(est: pd.Series, freq: str, log: bool, trading: bool, outlier: bool)
     finally:
         wlog.removeHandler(watch)
         wlog.setLevel(prior)
-    return (None, "; ".join(watch.hits)) if watch.hits else (out, None)
+    if watch.classical:
+        return None, "", "; ".join(watch.classical)
+    return out, ("trading day off (regression failed)" if watch.td_retry else ""), None
 
 
 def _x13_adjust(est: pd.Series, freq: str, log: bool, trading: bool,
@@ -465,12 +478,12 @@ def _x13_adjust(est: pd.Series, freq: str, log: bool, trading: bool,
 
     _x13_setup_once()
 
-    out, why = _x13_run(est, freq, log, trading, outlier)
-    note = ""
+    out, note, why = _x13_run(est, freq, log, trading, outlier)
     if out is None and outlier:
-        out, why2 = _x13_run(est, freq, log, trading, outlier=False)
+        out, note, why2 = _x13_run(est, freq, log, trading, outlier=False)
         if out is not None:
-            note = "outlier detection off (auto-detection failed on this sample)"
+            note = "; ".join(x for x in (
+                "outlier detection off (auto-detection failed on this sample)", note) if x)
         else:
             why = f"{why} | retry without outlier detection: {why2}"
 

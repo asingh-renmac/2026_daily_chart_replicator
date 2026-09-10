@@ -1017,7 +1017,7 @@ except _T.NeedPin:
 # The wrapper NEVER raises: it degrades to classical decomposition and logs it. If that
 # ever reaches a chart, the subtitle goes on saying X-13 over numbers X-13 did not make.
 _real_run, _T._X13_CACHE = _T._x13_run, {}
-_T._x13_run = lambda *a, **k: (None, "simulated X-13 failure")
+_T._x13_run = lambda *a, **k: (None, "", "simulated X-13 failure")
 try:
     _T.finish(_T.parse("sa(X)"), 0, _WIN, _smap, "M")
     check(False, "a classical fallback is refused")
@@ -1025,6 +1025,40 @@ except _T.TransformError as _e:
     check("Refusing to label a classical adjustment as X-13" in str(_e),
           "a silent classical fallback is REFUSED, not relabelled",
           "the wrapper degrades rather than raising, so this lane has to catch it")
+finally:
+    _T._x13_run, _T._X13_CACHE = _real_run, {}
+
+# The wrapper degrades in TWO ways and they are not equivalent. Classical decomposition
+# means X-13 never ran (refuse). A trading-day retry means X-13 ran WITHOUT the
+# regression we asked for — legitimate, but interp_log must stop claiming trading=True.
+# Nothing catches this today because the default is trading=False; it goes wrong the
+# first time somebody passes trading=1, which is exactly when they care.
+_w = _T._FallbackWatch()
+
+
+class _Rec:
+    def __init__(self, m): self._m = m
+    def getMessage(self): return self._m
+
+
+_w.emit(_Rec("X-13 failed for 'value' with trading=True (boom). "
+             "Retrying without trading day."))
+check(_w.td_retry and not _w.classical,
+      "a trading-day retry is recorded as a NOTE, not as a classical fallback",
+      "refusing it would reject a perfectly good X-13 run")
+_w.emit(_Rec("X-13 failed entirely for 'value': boom. "
+             "Falling back to classical decomposition."))
+check(len(_w.classical) == 1,
+      "and a real classical fallback is still caught separately")
+
+_ev3 = _T.Evaluator(_smap, _WIN)
+_T._X13_CACHE = {}
+_T._x13_run = lambda *a, **k: (_raw_mom, "trading day off (regression failed)", None)
+try:
+    _T.finish(_T.parse("sa(X, trading=1)"), 0, _WIN, _smap, "M", evaluator=_ev3)
+    check("trading day off" in [L for L in _ev3.interp_log if L.startswith("SA:")][0],
+          "and the note reaches interp_log, so trading=True is not reported falsely",
+          "a run logged as something it was not is the quiet version of a wrong chart")
 finally:
     _T._x13_run, _T._X13_CACHE = _real_run, {}
 

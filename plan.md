@@ -3642,23 +3642,44 @@ slot parks with "formula parse/unsupported" before a single ticker is confirmed,
 operator sees a park with no candidates and nothing to choose between. `diff%(R622)` on
 its own has always parsed; only the outer wrapper breaks it.
 
-### 20.2 The example is not the mistake it looks like
+### 20.2 Which leg of the chart the sa() is actually on
 
-`R622` is a DLX local alias for `jcsmhpm@usna` — "Household Consumption Expenditures:
-Hospitals  Price Index (SA, 2017=100)", double space and all. The base series is
-**already seasonally adjusted by BEA**, so `sa(diff%(X))` is not a sloppy ordering of
-`diff%(sa(X))`: it is stripping RESIDUAL seasonality out of an already-adjusted series'
-month-over-month change. Measured on the real data, the adjustment moves the standard
-deviation of the MoM from 0.2358 to 0.2301 — 2.4% — which is exactly the size of thing
-a residual-seasonality strip should be.
+**Corrected 2026-09-10 — the first reading of this chart was wrong, and the way it was
+wrong is worth keeping.** `R622` is not a Haver mnemonic and never was: DLX names
+calculation rows `R1, R2, ...`, so it is a LOCAL expression variable and cannot be
+resolved from outside the workbook. `haver_metadata` returns nothing for it in any
+database. The mistake was reading the chart's subtitle — "Household Consumption
+Expenditures: Hospitals  Price Index ... SA, 2017=100" — as if it described the series
+in the title. It does not. The chart has two lines and the subtitle belongs to the
+other one.
 
-That settles the design question the house SA rule appears to answer. The rule says
-"apply SA to LEVELS, never to growth rates", and rewriting the formula to `diff%(sa(X))`
-would honor it — but the two are different operations here (r=0.9855, mean absolute
-difference 0.031pp, max 0.12pp on this series), and quietly substituting one for the
-other would plot a different line while claiming to replicate the chart. **We honor what
-is written.** The wrong-order case is real, but it is the operator's call to make, and
-the diagnostic in `interp_log` is what tells them it is theirs.
+The giveaway was on the chart the whole time: **"Sources: BLS, BEA/Haver"**, two agencies
+for two legs.
+
+  * **BEA leg** — the hospitals PCE price index (`jcsmhpm@usna`), published SA. It gets
+    **no wrapper at all**. There is no residual-seasonality strip here.
+  * **BLS leg** — a hospital PPI, published **NSA**. This is the `sa(...)` in the title.
+
+So the operation is the one the house SA rule warns about: sa() applied to the growth
+rate of an NSA series rather than to its level. On `p512101@ppi` ("PPI: Hospital
+Inpatient Care", NSA) standing in for the PPI leg, over the chart's window:
+
+| | sd of MoM | seasonality removed |
+|---|---|---|
+| `diff%(X)` raw NSA | 0.3668 | — |
+| `sa(diff%(X))` as charted | 0.2703 | 26.3% |
+| `diff%(sa(X))` reordered | 0.2757 | 24.8% |
+
+The two orderings give r=0.9718, mean absolute difference 0.0485pp, max 0.2043pp. That
+is a real gap between two defensible answers — and it is exactly why the pipeline must
+not silently pick one. **We honor what is written** and put the sample and the options
+into `interp_log`, so the operator can see the choice was theirs. Rewriting it to
+`diff%(sa(X))` would plot the reordered line under the charted line's name.
+
+For contrast, the same measurement on the already-SA BEA leg moves sd from 0.2358 to
+0.2301 — 2.4%. That number is what a residual strip looks like, and mistaking it for
+this chart's operation is what produced the original error. `p512101` is a stand-in, not
+the confirmed PPI leg; the exact mnemonic lives in the DLX workbook.
 
 ### 20.3 What was decided, explicitly
 
@@ -3688,6 +3709,16 @@ logs a warning — right for a batch script, wrong for a lane whose subtitle wou
 saying "seasonally adjusted (X-13)" over numbers X-13 never produced. `_FallbackWatch`
 catches that warning and turns it into a `TransformError`. This fired on the very first
 real run, which is how the outlier failure above was found rather than shipped.
+
+**And it degrades in two different ways, only one of which should be refused.** Asked
+about `trading` on 2026-09-10, the watch turned out to catch only the classical
+fallback. The wrapper's OTHER degradation — "X-13 failed with trading=True ... Retrying
+without trading day" — contains neither "fall" nor "failed entirely" and slipped past,
+so `interp_log` would have gone on reporting `trading=True` for a run that had it off.
+That is not a wrong chart, it is a wrong *record* of a chart, and it is invisible
+exactly when somebody has bothered to ask for the regression. `_FallbackWatch` now
+classifies: classical → refuse, trading-day retry → note it and carry on. Latent rather
+than live, because the default is `trading=False`.
 
 ### 20.5 Provenance is not optional
 
@@ -3728,3 +3759,30 @@ the Census URL and a pinned SHA256 (verified byte-identical to the laptop's copy
 AVD cannot end up on a different X-13 than the one these numbers were developed against.
 It also copies the shipped binary to `x13as.exe`. `transforms._X13_CANDIDATES` already
 contains the AVD path, so the lane works whether or not `X13PATH` gets set.
+
+### 20.7 Two things that look like SA settings and are not
+
+**`Func.log` and `Func.centered` have nothing to do with X-13.** They are positional
+fields of the AST node every function shares, set by the grammar from the name itself:
+`DIFFL` sets `log`, `DIFFC` sets `centered`, `DIFF%` sets `pct`. `_classify_func("SA")`
+returns `("SA", False, False, False)`, so all three are **always False on an SA node**,
+and `_sa_args` only passes them through to keep one constructor signature.
+
+The multiplicative-model switch is `opts["log"]`, a different thing that happens to
+share a word — `sa(X, log=1)` sets `opts["log"]=1.0` and leaves `Func.log` False. The
+collision is unfortunate and was worth a question. Left as-is because `log` is what the
+wrapper's own parameter is called, and inventing a third spelling for the same concept
+would trade one confusion for another; the block comment above `_SA_OPTS` says so.
+
+**`trading=False` is the default on purpose, and it is the right one here.** The
+trading-day regression corrects for how many business days a month contained. That
+matters for FLOWS measured over a month — retail sales, shipments, hours worked. It does
+not matter for a PRICE INDEX: PPI and PCE price indexes are not driven by business-day
+count, and gotcha 4 of the wrapper names exactly this class ("survey indices, financial
+prices, rates") as the one where the regression fails or returns nonsense.
+
+The wrapper's own default is `trading=True` with a retry, which suits a batch script
+over mixed series. This lane sees price indexes and growth rates far more often than
+flows, and an unnecessary trading-day regression is a silent distortion rather than a
+loud failure. `sa(X, trading=1)` is there for the flow case, and now reports honestly
+when the regression fails (§20.4).
