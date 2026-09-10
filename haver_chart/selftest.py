@@ -929,6 +929,142 @@ check(_lane_mod.health()["last_pull_finished"] != _h["last_render_finished"]
 _lane_mod._dlx_suspect = False
 _lane_mod._last_dlx_ok = None
 
+# ── 15. sa() — X-13 run locally, in a lane that must never mislabel it ──────────
+# Haver writes `sa(...)` into formulas and the parser had no such token, so every read
+# carrying one died at `formula_mnemonics` before a ticker was ever confirmed — the
+# formula path parked with "formula parse/unsupported" and the operator saw a park with
+# no candidates. These checks cover the three ways the fix could go quietly wrong:
+# adjusting on the wrong sample, mislabelling whose adjustment it is, and letting the
+# wrapper's classical fallback pass itself off as X-13.
+print("\n15. sa() seasonal adjustment (X-13)")
+
+import numpy as _np                                                    # noqa: E402
+import pandas as _pd                                                   # noqa: E402
+
+import build_chart as _BC                                              # noqa: E402
+import transforms as _T                                                # noqa: E402
+from render import PlotSeries as _PS                                   # noqa: E402
+
+check(_T.formula_mnemonics("sa(diff%(X))") == ["X"],
+      "sa() parses and yields its inner mnemonic",
+      "this is the regression: it used to raise NeedPin and park the whole slot")
+check(_T.parse("sa(X, log=1, lookback=8)").opts == {"log": 1.0, "lookback": 8.0},
+      "the keyword form carries its overrides")
+try:
+    _T.parse("sa(X, bogus=1)")
+    check(False, "an unknown sa() option is rejected")
+except _T.ParseError as _e:
+    check("recognized" in str(_e),
+          "an unknown sa() option is rejected AND lists the real ones",
+          "an operator who cannot see the accepted spelling has to guess at it")
+
+_rng = _np.random.default_rng(7)
+_idx = _pd.date_range("2005-01-31", periods=250, freq="ME")
+_lvl = (100 * _np.exp(_np.linspace(0, .5, 250))
+        + 6 * _np.sin(2 * _np.pi * _np.arange(250) / 12) + _rng.normal(0, .5, 250))
+_smap = {"X": _T.SeriesData(values=_pd.Series(_lvl, index=_idx), freq="M", code="X@T")}
+_WIN = (_pd.Timestamp("2016-01-31"), _pd.Timestamp("2025-10-31"))
+
+_ev = _T.Evaluator(_smap, _WIN)
+_sa_mom = _T.finish(_T.parse("sa(diff%(X))"), 0, _WIN, _smap, "M", evaluator=_ev)
+_raw_mom = _T.finish(_T.parse("diff%(X)"), 0, _WIN, _smap, "M")
+check(_sa_mom.std() < _raw_mom.std() / 2,
+      "sa() actually removes the seasonality it claims to",
+      f"sd {_raw_mom.std():.3f} -> {_sa_mom.std():.3f}")
+check(_T.finish(_T.parse("diff%(sa(X))"), 0, _WIN, _smap, "M").std() < _raw_mom.std() / 2,
+      "and it composes in BOTH directions",
+      "sa(diff%(X)) and diff%(sa(X)) are different operations, and both must evaluate")
+
+check(_sa_mom.index[0] == _WIN[0] and _sa_mom.index[-1] <= _WIN[1],
+      "the plotted line is sliced to the display window")
+_est = [L for L in _ev.interp_log if L.startswith("SA:")][0]
+check("2011-01-31" in _est and "2005" not in _est,
+      "X-13 estimated on the window extended back by SA_LOOKBACK_YEARS, not on all history",
+      "a bounded sample is the choice; drifting to full history would change every value")
+
+# A window shorter than X-13's floor must widen its own lookback rather than quietly
+# accept the classical fallback that a too-short sample would trigger inside the wrapper.
+_SHORT = (_pd.Timestamp("2024-01-31"), _pd.Timestamp("2025-10-31"))
+_ev2 = _T.Evaluator(_smap, _SHORT)
+_T.finish(_T.parse("sa(X)"), 0, _SHORT, _smap, "M", evaluator=_ev2)
+import re as _re                                                       # noqa: E402
+_n_est = int(_re.search(r"on (\d+) M obs",
+                        [L for L in _ev2.interp_log if L.startswith("SA:")][0]).group(1))
+check(_n_est >= _T.SA_MIN_OBS["M"],
+      "a short window auto-widens its estimation sample past the X-13 floor",
+      f"{_n_est} obs >= {_T.SA_MIN_OBS['M']}")
+
+_tiny = {"X": _T.SeriesData(values=_pd.Series(_np.arange(20.),
+         index=_pd.date_range("2023-01-31", periods=20, freq="ME")), freq="M", code="X@T")}
+try:
+    _T.finish(_T.parse("sa(X)"), 0,
+              (_pd.Timestamp("2023-01-31"), _pd.Timestamp("2024-08-31")), _tiny, "M")
+    check(False, "too little history refuses")
+except _T.TransformError as _e:
+    check("needs 36" in str(_e),
+          "too little history REFUSES instead of silently degrading",
+          "the wrapper would have fallen back to classical and returned a plausible line")
+
+_wk = {"X": _T.SeriesData(values=_pd.Series(_np.arange(400.),
+       index=_pd.date_range("2015-01-04", periods=400, freq="W")), freq="W", code="X@T")}
+try:
+    _T.finish(_T.parse("sa(X)"), 0,
+              (_pd.Timestamp("2016-01-03"), _pd.Timestamp("2022-01-02")), _wk, "W")
+    check(False, "a weekly series refuses")
+except _T.NeedPin:
+    check(True, "a weekly series refuses — X-13 adjusts monthly or quarterly only")
+
+# The wrapper NEVER raises: it degrades to classical decomposition and logs it. If that
+# ever reaches a chart, the subtitle goes on saying X-13 over numbers X-13 did not make.
+_real_run, _T._X13_CACHE = _T._x13_run, {}
+_T._x13_run = lambda *a, **k: (None, "simulated X-13 failure")
+try:
+    _T.finish(_T.parse("sa(X)"), 0, _WIN, _smap, "M")
+    check(False, "a classical fallback is refused")
+except _T.TransformError as _e:
+    check("Refusing to label a classical adjustment as X-13" in str(_e),
+          "a silent classical fallback is REFUSED, not relabelled",
+          "the wrapper degrades rather than raising, so this lane has to catch it")
+finally:
+    _T._x13_run, _T._X13_CACHE = _real_run, {}
+
+check(_BC.transform_label("sa(diff%(X))", "month")
+      == "% change, period-over-period, seasonally adjusted (X-13)",
+      "the label keeps the INNER transform and adds the SA stamp",
+      "stamping alone would drop '% change' and the chart would stop saying what it plots")
+check(_BC.transform_label("diff%(sa(X))", "month", ).endswith("seasonally adjusted (X-13)")
+      and _BC.transform_label("sa(A)+sa(B)", "month") == "seasonally adjusted (X-13)",
+      "the stamp survives the other ordering AND a sum, where the label is otherwise None",
+      "provenance is the point: these numbers are ours, not the source agency's")
+check(_BC.transform_label("diff%(X)", "month") == "% change, period-over-period",
+      "an unadjusted series is NOT stamped")
+
+check(_PS(label="x", series=_raw_mom).sa is False
+      and _PS(label="x", series=_raw_mom, sa=True).sa is True,
+      "PlotSeries carries the SA flag validation reads")
+_rend = {"_drawn": [_PS(label="Hospitals", series=_sa_mom, sa=True)],
+         "_freq": "M", "end": str(_sa_mom.index[-1].date())}
+_row = lane.last_value_check(_rend, {"Hospitals": float(_sa_mom.iloc[-1])})[0]
+check("widened" in _row.get("tolerance", ""),
+      "an SA'd line widens the last-value tolerance AND says so in the row",
+      "our X-13 cannot tie exactly to Haver's sa(); a check that silently got weaker "
+      "is worse than none, because the report still reads PASS")
+check("tolerance" not in lane.last_value_check(
+          {"_drawn": [_PS(label="Hospitals", series=_sa_mom)], "_freq": "M",
+           "end": str(_sa_mom.index[-1].date())},
+          {"Hospitals": float(_sa_mom.iloc[-1])})[0],
+      "and an unadjusted line keeps the strict tolerance")
+
+_vend = _REPO_ROOT / "src" / "x13_seasonal_adjust.py"
+_canon = Path(r"C:\Users\asingh\new_work\econ-templates\sa\x13_seasonal_adjust.py")
+check(_vend.exists(), "the X-13 wrapper is vendored into src/",
+      "the AVD cannot clone econ-templates — its remote is SSH-only and that host "
+      "cannot complete an SSH handshake to GitHub")
+if _canon.exists():
+    check(_vend.read_bytes() == _canon.read_bytes(),
+          "and the vendored copy has not drifted from econ-templates",
+          "run scripts/check_x13_vendor.py")
+
 n_bad = sum(1 for ok, _, _ in _RESULTS if not ok)
 print("\n" + "=" * 78)
 print(f"{len(_RESULTS) - n_bad}/{len(_RESULTS)} checks passed"
