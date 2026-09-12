@@ -215,7 +215,8 @@ unless it also died — a second tunnel for `chart.hvr-mcp.work` must never be c
 `C:\Users\madz\Work\asingh\haver-data\repo`. That means:
 
 - A restart no longer needs a human. `McpLaneEnsure` runs every five minutes as `madz`
-  and starts any lane that is down; `McpLaneNightly` recycles all of them at 03:30.
+  and starts any lane that is down; `McpLaneNightly` recycles all of them at 02:30
+  (moved off 03:30 on 2026-09-09 — Windows Update reboots kept landing 03:27-03:35).
   Preferred over a hand restart, because it reproduces the exact launch arguments.
 - The launch command line is **recorded in that other repo's `$LANES` table**. Change the
   interpreter path, the script path or the working directory here and you must change it
