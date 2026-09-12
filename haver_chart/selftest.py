@@ -921,11 +921,21 @@ check(_lane_mod.health()["session_suspect"] is False,
       "a later success clears suspect again",
       "one bad ticker must not latch the flag on forever")
 
-check(_lane_mod.health()["last_pull_finished"] != _h["last_render_finished"]
-      or _h["last_render_finished"] is None,
+# Independence, proved by wiring rather than by comparing two clocks. The original form
+# asserted the two stamps held DIFFERENT STRINGS, which is a coincidence dressed as an
+# invariant: both are isoformat(timespec="seconds"), so a render and a DLX note landing
+# in the same second failed it with nothing wrong. Flaked 2026-09-09 locally and again on
+# the AVD 2026-09-11. A sentinel the clock cannot produce settles it deterministically.
+_SENTINEL = "1999-01-01T00:00:00+00:00"
+_render_save = _lane_mod._last_render_finished
+_lane_mod._last_render_finished = _SENTINEL
+_lane_mod._dlx_note(True)
+_h = _lane_mod.health()
+check(_h["last_pull_finished"] != _SENTINEL and _h["last_render_finished"] == _SENTINEL,
       "the DLX stamp is not the render stamp",
       "a render can finish from cache without touching DLX, so it cannot stand in")
 
+_lane_mod._last_render_finished = _render_save
 _lane_mod._dlx_suspect = False
 _lane_mod._last_dlx_ok = None
 

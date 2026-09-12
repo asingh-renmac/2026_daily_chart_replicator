@@ -3624,12 +3624,24 @@ diagnosis had to lean on reasoning about which code path was live. A warm hit an
 fetch are indistinguishable to an operator except in seconds, so the seconds are the thing
 worth recording.
 
-### 19.9 Known flake
+### 19.9 Known flake — fixed 2026-09-11
 
-`the DLX stamp is not the render stamp` (§14 of the self-test) compares two second-
-resolution timestamps for inequality and fails when a render and a DLX note land in the
-same second. Seen once on 2026-09-09 and passing on re-run. Not fixed here; noted so the
-next person does not chase it as a regression.
+`the DLX stamp is not the render stamp` (§14 of the self-test) compared two second-
+resolution timestamps for inequality and failed when a render and a DLX note landed in
+the same second. Seen 2026-09-09 locally, then again on the AVD 2026-09-11, which is
+where a "passes on re-run" note stops being good enough: the first person to run the
+suite on a new host met a red line that meant nothing, and the only way to know that was
+to have read this paragraph.
+
+The check now stamps `_last_render_finished` with a sentinel the clock cannot produce and
+asserts a DLX note moves the DLX stamp while leaving that one alone. Same intent —
+`last_render_finished` cannot stand in for `last_pull_finished` — but it tests the wiring
+instead of two clock readings, so it cannot flake, and it still fails if the two fields
+are ever crossed.
+
+The general lesson, since this took two sightings to act on: a test whose pass depends on
+two events NOT sharing a timestamp is a test with a scheduled false alarm. Assert against
+a value the system under test cannot generate.
 
 ## 20. `sa(...)` — running X-13 ourselves (2026-09-10)
 
