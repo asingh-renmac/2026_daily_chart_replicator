@@ -204,7 +204,7 @@ to nobody. Delete the `local` copy once the ratchet check in §8 passes; the lap
 ## 7. Restart the server — owner, at RDP
 
 Restarting is cheap: the lane keeps no state between calls beyond the parquet cache, and
-the JWT signing key is fixed in `.env`, so sessions survive (`SERVER_SETUP.md` §233).
+the JWT signing key is fixed in `.env`, so sessions survive (`SERVER_SETUP.md` §8).
 
 Stop the running `server.py`, start it again the same way, and leave `cloudflared` alone
 unless it also died — a second tunnel for `chart.hvr-mcp.work` must never be created.

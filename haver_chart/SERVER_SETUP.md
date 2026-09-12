@@ -59,6 +59,34 @@ C:\Users\<you>\envs\haver-chart\Scripts\python.exe -m pip install -r C:\...\have
 `fastmcp[azure]` pulls the auth dependencies. A venv that only has `haver` — one left over
 from reconnaissance, say — is not enough.
 
+### 2b. X-13, for `sa()` formulas
+
+A Haver formula can carry `sa(...)`, and the lane runs the seasonal adjustment itself
+rather than asking Haver for it. That needs **two halves, and pip supplies only one**:
+
+- `statsmodels` drives the adjustment. It is in `requirements.txt`, so step 2 installed
+  it. Called out because it is imported lazily — a host without it starts and serves
+  perfectly normally, then fails on the first `sa()` formula and nothing earlier hints
+  at it.
+- The **X-13ARIMA-SEATS binary** from the US Census Bureau is not a Python package:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\...\haver-chart\repo\scripts\avd_install_x13.ps1 -Apply
+```
+
+It downloads a pinned build, verifies its SHA256, unpacks it, copies the shipped
+executable to the `x13as.exe` name statsmodels looks for, and sets a User `X13PATH`.
+Idempotent — it exits early if the binary is already there. Edit `$Root` inside it if the
+host is not laid out like the AVD.
+
+`transforms._X13_CANDIDATES` also hard-codes the two known install paths, so `X13PATH` is
+belt-and-braces rather than the only signal. If neither resolves, an `sa()` formula parks
+with a message naming what it looked for, instead of rendering something unadjusted and
+labelling it adjusted.
+
+Verify both halves at once — `scripts\avd_smoke.py` (step 4) reports a `dependencies` line
+and an `X-13 binary` line.
+
 ## 3. Knowledge store
 
 ```powershell
@@ -99,10 +127,30 @@ Then verify, before any network work:
 C:\Users\<you>\envs\haver-chart\Scripts\python.exe C:\...\haver-chart\repo\haver_chart\selftest.py
 ```
 
-**37/37 with three `(package)` lines in section 2.** This resolves a real series and
-renders a real PNG, so it exercises DLX, the catalog and matplotlib on this host. Fix
-anything here before continuing — a tunnel in front of a broken lane just moves the error
-somewhere harder to see.
+**186/186 as of 2026-09-12**, with three `(package)` lines in its section 2. This resolves
+a real series and renders a real PNG, so it exercises DLX, the catalog, X-13 and
+matplotlib on this host. Fix anything here before continuing — a tunnel in front of a
+broken lane just moves the error somewhere harder to see.
+
+The count grows as checks are added; treat a *lower* number with failures as the signal,
+not the total. **187** on a machine that also has the `econ-templates` checkout, because
+one check compares the vendored X-13 wrapper against the canonical copy and skips when it
+is absent. A server will not have it, so 186 is the correct full pass there.
+
+Also run the no-DLX smoke test, which is what the update path uses later and which checks
+the two things step 2 could leave half-done:
+
+```powershell
+C:\Users\<you>\envs\haver-chart\Scripts\python.exe C:\...\haver-chart\repo\scripts\avd_smoke.py
+```
+
+```
+dependencies     : all pinned versions present
+X-13 binary      : C:\...\tools\winx13\x13as
+```
+
+A version that does not match `requirements.txt`, or a missing X-13, is named here rather
+than three weeks later inside a formula.
 
 `scripts\g10d_http_check.py` is the same idea for the transport: it stands up a throwaway
 server on port 8123 with dummy credentials and proves HTTP works on this machine, without
@@ -212,8 +260,20 @@ curl.exe https://<hostname>/health
 Then the same URL from a phone on cellular data, off the corporate network:
 
 ```json
-{"status":"ok","rendering":false,"last_render_finished":null,"retention_days":14}
+{"status":"ok","rendering":false,"last_render_finished":null,
+ "session_suspect":false,"last_pull_finished":"2026-09-12T01:49:33+00:00",
+ "retention_days":14,
+ "chat_memory":{"operator":"local","path":"...","exists":false,"entries":0}}
 ```
+
+`session_suspect` and `last_pull_finished` are what `McpHealthWatch` (step 7) keys on, by
+those exact names — the data lane publishes the same two, so one rule covers both. Their
+absence means an older build is running.
+
+`chat_memory.operator` always reads `local` here however you are signed in, because
+`/health` is unauthenticated and so always sees the anonymous operator. To find your real
+slug, call `forget_binding` on a descriptor that does not exist from an authenticated
+client; it removes nothing and returns `operator` and the exact store path.
 
 That is the whole public edge proven without Claude or a sign-in in the picture. If
 `/health` answers but the connector later fails, the problem is Entra or the redirect
@@ -225,7 +285,91 @@ the likely cause is an expired DLX credential holding the render lock behind an 
 login window. The lock times out — `CHART_RENDER_LOCK_TIMEOUT_S`, default 300 — so the
 server recovers on its own, but signing in to DLX on the host is the actual fix.
 
-## 7. Operating notes
+## 7. Supervision and alerting
+
+Steps 1-6 leave you with a lane that works until the first time nobody is looking. Three
+scheduled tasks fix that, and **all three live in the `2026_haver_mcp` repo, not this
+one** — they supervise every lane on the host, so they belong with neither and were put
+with the first. Clone it beside this package before going further.
+
+```powershell
+# elevated, once
+powershell -NoProfile -File ...\2026_haver_mcp\scripts\avd_lane_supervisor_install.ps1
+powershell -NoProfile -File ...\2026_haver_mcp\scripts\avd_health_watch_install.ps1
+```
+
+| Task | Runs | Does |
+|---|---|---|
+| `McpLaneEnsure` | every 5 min | starts any lane that is down |
+| `McpLaneNightly` | 02:30 | recycles all lanes |
+| `McpHealthWatch` | hourly at :37 | reads each `/health`, alerts on a state change |
+
+**Register them elevated (`/rl HIGHEST`).** The lanes then run at high integrity, and an
+unelevated caller cannot read an elevated process's command line even as the same user —
+`Win32_Process` returns the row with `CommandLine` null, so every lane reads as DOWN and
+Ensure starts a duplicate of each. The supervisor refuses to act when it detects this, but
+the refusal is a guard, not a substitute for registering the task correctly.
+
+**02:30 is chosen against the patch schedule, not for tidiness.** Windows Update reboots
+on this host landed 03:27-03:35 three months running; anything after 03:00 races them.
+
+### The launch commands are recorded in the other repo
+
+`$LANES` in `avd_lane_supervisor.ps1` holds each lane's interpreter path, script path and
+working directory. Change any of them here and you must change them there, or the
+supervisor will faithfully restart the lane the old way. This is the single easiest thing
+to get wrong on a new host, because nothing fails until the first unattended restart.
+
+### alert_config.json
+
+Neither repo contains it — it holds secrets. Create it in the log directory
+(`C:\...\logs\alert_config.json`) by hand:
+
+```json
+{
+  "slack_webhook": "https://hooks.slack.com/services/...",
+  "slack_mention": "U...",
+  "graph_tenant_id": "...", "graph_client_id": "...", "graph_client_secret": "...",
+  "graph_sender": "you@example.com",
+  "email_to": ["you@example.com"]
+}
+```
+
+`slack_mention` must be the raw member ID, because `<@U...>` is what turns a post into a
+notification — a plain `@name` renders as text and notifies nobody, which fails in the
+most deceptive way available, since the message looks perfect. The mention is also what
+makes Slack email you when you are away, so one webhook covers both channels.
+
+Prove the path works **before** you need it, since otherwise it is only ever exercised by
+the outage it exists to announce:
+
+```powershell
+powershell -NoProfile -File ...\scripts\avd_lane_supervisor.ps1 -TestAlert
+powershell -NoProfile -File ...\scripts\avd_health_watch.ps1 -TestAlert
+```
+
+### What each watcher can and cannot see
+
+They overlap less than they look. `McpLaneEnsure` watches for a process that **vanished**
+and alerts from its `STARTED` branch — which means "I found this lane dead", as opposed to
+`RESTARTED`, which means somebody asked. `McpHealthWatch` watches for a process that
+**lies**: one answering HTTP while DLX refuses every pull, which is invisible to a
+liveness check and ran for four days undetected in September 2026.
+
+Neither sees everything. The hourly poll cannot see a short outage at all — a crash at
+09:27:34 recovered by 09:29:30 falls entirely between two polls — which is exactly why the
+five-minute supervisor alerts too. And **a healthy sweep says nothing**, deliberately, so
+silence means "nothing detected", never "nothing happened".
+
+### Logs
+
+Lane stdout and stderr go to `...\logs\<lane>.out.log` / `.err.log`, and the supervisor's
+own verdict to `supervisor.log`. `Start-Process` truncates on redirect, so the supervisor
+archives the previous run's log to a timestamped name at every start and prunes past
+`-KeepLogDays` (14). Without that, the nightly recycle means no lane log ever survives a
+day — and the restart is exactly correlated with the incidents worth reading about.
+
+## 8. Operating notes
 
 - **Retention.** Rendered PNGs are swept after `CHAT_RETENTION_DAYS` (default 14). Every
   render writes a uniquely-named file, so without the sweep the folder grows forever.
@@ -235,3 +379,25 @@ server recovers on its own, but signing in to DLX on the host is the actual fix.
   raises. Remote callers cannot teach the daily lane anything, by construction.
 - **Restarting is cheap.** The lane keeps no state between calls beyond the parquet
   cache. Restart freely.
+- **Per-operator memory is never preseeded.** The four shared stores in `knowledge\` are
+  read by everyone; `chat_learned.<slug>.json` is created empty on a new operator's first
+  saved binding and is private to them. Nobody inherits anybody's chat answers.
+
+### Updating this host afterwards
+
+`DEPLOY.md` is the update path; this file is the build path. The one thing to understand
+before reading it is **why updating is split across two accounts**:
+
+| | Deploy account (over SSH) | Interactive owner (at RDP) |
+|---|---|---|
+| Can do | `git fetch` / `merge --ff-only`, the no-DLX smoke test | `selftest.py`, restart the lane |
+| Cannot do | anything needing DLX — the session belongs to the owner | — |
+
+So `scripts\avd_deploy.ps1` updates the checkout and deliberately stops, printing what is
+left to do. Two host facts are baked into it, both learned the hard way: `safe.directory`
+is passed through `GIT_CONFIG_*` rather than `git config --global`, because the checkout
+belongs to the owner while the deploy account runs it and the `--global` form is *accepted
+and then ignored* in a non-interactive `powershell -File` session; and `origin` must stay
+an HTTPS URL, because SSH to GitHub from this host accepts the TCP connection on both 22
+and 443 and then never completes the handshake. That second fact is also why the X-13
+wrapper is vendored into `src/` instead of imported from `econ-templates`.
