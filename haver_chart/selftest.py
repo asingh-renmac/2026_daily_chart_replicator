@@ -1109,6 +1109,82 @@ if _canon.exists():
           "and the vendored copy has not drifted from econ-templates",
           "run scripts/check_x13_vendor.py")
 
+# ── 16. SA/NSA twins: one descriptor, two series, two answers ───────────────────
+# Found 2026-09-11 in a colleague's store. `CPI-U: Commodities Less Food and Energy
+# Commodities (Core Goods)` names an SA series and an NSA series; `_norm_key` filed both
+# under one key, so the second answer destroyed the first. Two independent defects, and
+# each one alone still leaves a wrong chart reachable:
+#   * the KEY could not tell the twins apart, so answers overwrote each other;
+#   * `sa_matches` read `sa_status`, which the CATALOG supplies and DLX does not, so on
+#     the learned-entry path (fed by DLX metadata) the cross-check always passed.
+print("\n16. SA/NSA twins do not share one memory")
+
+_SA_D = "CPI-U: Commodities Less Food and Energy Commodities (Core Goods)"
+_sa_meta = {"descriptor": "CPI-U: Commodities Less Food & Energy (SA, 1982-84=100)"}
+_nsa_meta = {"descriptor": "CPI-U: Commodities Less Food & Energy (NSA, 1982-84=100)"}
+
+check(R.store_key(_SA_D, "sa") != R.store_key(_SA_D, "nsa"),
+      "an SA answer and an NSA answer get different keys",
+      "one key meant whichever was answered second silently erased the first")
+
+_twins = {R.store_key(_SA_D, "sa"): {"code": "uccxfdg@cpidata", "adjustment": "sa"},
+          R.store_key(_SA_D, "nsa"): {"code": "uccxfdgn@cpidata", "adjustment": "nsa"}}
+check(R.learned_lookup(_twins, _SA_D, "sa")["code"] == "uccxfdg@cpidata"
+      and R.learned_lookup(_twins, _SA_D, "nsa")["code"] == "uccxfdgn@cpidata",
+      "each hint reaches its own twin")
+check(R.learned_lookup(_twins, _SA_D, "") is None,
+      "with both stored and NO hint, the lookup declines",
+      "an ambiguous memory is not a licence to pick one — same rule as the loose key")
+
+_legacy = {R._norm_key(_SA_D): {"code": "uccxfdg@cpidata"}}
+check(R.learned_lookup(_legacy, _SA_D, "sa")["code"] == "uccxfdg@cpidata"
+      and R.learned_lookup(_legacy, _SA_D, "")["code"] == "uccxfdg@cpidata",
+      "an unqualified entry written before this change still answers",
+      "every store on disk is unqualified; orphaning them would re-ask every park "
+      "ever recorded, which is the one failure that looks exactly like success")
+check(R.learned_lookup({R._norm_key(_SA_D): {"code": "uccxfdg@cpidata",
+                                             "adjustment": "sa"}}, _SA_D, "nsa") is None,
+      "but an entry that STATES a contradicting adjustment is refused",
+      "silence is not disagreement; a recorded disagreement is")
+
+check(R._meta_reject(_nsa_meta, {"sa_hint": "nsa", "description": _SA_D}) is None
+      and R._meta_reject(_sa_meta, {"sa_hint": "nsa", "description": _SA_D}) is not None,
+      "the SA cross-check fires on DLX metadata, which carries no sa_status field",
+      "it read only the catalog's field, so on this path it never rejected anything — "
+      "a guard documented as catching a silent-wrong mis-bind, doing nothing")
+check(R._meta_reject(_sa_meta, {"sa_hint": "saar", "description": _SA_D}) is None,
+      "saar still counts as seasonally adjusted")
+check(R._meta_reject({"descriptor": "Fed Funds Target Rate (%)"},
+                     {"sa_hint": "nsa", "description": _SA_D}) is None,
+      "a descriptor with no adjustment tag never blocks",
+      "unknown on either side cannot disprove — over-parking is its own failure")
+
+from haver_chart import chat_store as _CHAT  # noqa: E402
+
+# Through the real `forget`, with the store's two I/O ends stubbed — bootstrap blocks
+# writes to the live knowledge dir during the self-test, and this needs to prove the
+# function's SELECTION, not that a file lands.
+_fake = {"_schema": 1, "_operator": {},
+         "entries": {R.store_key(_SA_D, "sa"): {"code": "a@b"},
+                     R.store_key(_SA_D, "nsa"): {"code": "c@d"},
+                     R._norm_key("something else"): {"code": "e@f"}}}
+_written = {}
+_read_save, _write_save = _CHAT._read, _CHAT._write_atomic
+try:
+    _CHAT._read = lambda _p: _fake
+    _CHAT._write_atomic = lambda _p, blob: _written.update(blob)
+    _forgot = _CHAT.forget(_SA_D, operator="selftest")
+    _missing = _CHAT.forget("never stored anything under this", operator="selftest")
+finally:
+    _CHAT._read, _CHAT._write_atomic = _read_save, _write_save
+
+check(_forgot and sorted(_written["entries"]) == [R._norm_key("something else")],
+      "forget removes every adjustment variant of one descriptor, and nothing else",
+      "the operator saw a descriptor, not two rows; leaving the twin behind would look "
+      "like forget_binding silently failed")
+check(_missing is False,
+      "and forgetting an unknown descriptor still reports False")
+
 n_bad = sum(1 for ok, _, _ in _RESULTS if not ok)
 print("\n" + "=" * 78)
 print(f"{len(_RESULTS) - n_bad}/{len(_RESULTS)} checks passed"

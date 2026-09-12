@@ -138,7 +138,51 @@ def _loose_key(text: str) -> str:
     return s
 
 
-def learned_lookup(learned: dict, descriptor: str) -> Optional[dict]:
+# The SA/NSA twins of one series share a descriptor once the units parenthetical is
+# stripped, so `_norm_key` alone files both under ONE key: whichever is answered second
+# destroys the first, and the descriptor re-parks forever after because whatever is
+# stored is wrong for half the requests. Measured 2026-09-11 on a colleague's store,
+# where `CPI-U: Commodities Less Food and Energy Commodities (Core Goods)` held the SA
+# code under the key an NSA request also reaches.
+#
+# U+241F is the PRINTABLE "symbol for unit separator" -- visible when someone opens the
+# JSON, and outside the character set any descriptor or `_norm_key` output can contain,
+# so it cannot collide with a real key. Keys stay unqualified when the adjustment is
+# unknown, which is what every store written before this contains: those keep resolving
+# through the legacy branch below and are superseded naturally as they are re-answered.
+_SA_KEY_SEP = "\u241f"
+
+
+def store_key(descriptor: str, adjustment: str = "") -> str:
+    """The key a descriptor is filed under, qualified by seasonal adjustment when known."""
+    base = _norm_key(descriptor)
+    adj = _sa_norm(adjustment)
+    return f"{base}{_SA_KEY_SEP}{adj}" if adj else base
+
+
+def _key_base(key: str) -> str:
+    """The descriptor half of a stored key, qualified or not."""
+    return key.split(_SA_KEY_SEP, 1)[0]
+
+
+def _adj_compatible(entry, want: str) -> bool:
+    """False only when the entry states an adjustment that CONTRADICTS the request.
+
+    Silence is not disagreement: a legacy entry records no adjustment and must keep
+    working, and a request with no hint is not asking for one. Both fall through to the
+    `_meta_reject` cross-check, which re-reads the adjustment from DLX anyway.
+    """
+    if not want or not isinstance(entry, dict):
+        return True
+    got = _sa_norm(entry.get("adjustment") or "")
+    if not got:
+        return True
+    if want in ("sa", "saar") and got in ("sa", "saar"):
+        return True
+    return want == got
+
+
+def learned_lookup(learned: dict, descriptor: str, sa_hint: str = "") -> Optional[dict]:
     """Exact key first, then one forgiving retry (§16.2).
 
     The retry fires only when the loose key identifies exactly ONE code. If two stored
@@ -148,18 +192,27 @@ def learned_lookup(learned: dict, descriptor: str) -> Optional[dict]:
     A loose hit is not a shortcut past the guards. Callers still re-confirm the code
     against DLX and still run `_meta_reject` and `double_transform_reason` over it, so
     this widens what reaches the checks, never what escapes them.
+
+    `sa_hint` picks between SA/NSA twins filed under the same descriptor. It is a
+    PREFERENCE, not a filter: an unqualified legacy entry still answers, because
+    refusing one would re-ask every park recorded before the key carried adjustment.
     """
     if not learned:
         return None
+    want = _sa_norm(sa_hint)
+    if want:
+        exact = learned.get(store_key(descriptor, want))
+        if exact is not None:
+            return exact
     exact = learned.get(_norm_key(descriptor))
-    if exact is not None:
+    if exact is not None and _adj_compatible(exact, want):
         return exact
-    want = _loose_key(descriptor)
-    if not want:
+    loose = _loose_key(descriptor)
+    if not loose:
         return None
     hits: dict[str, object] = {}
     for key, val in learned.items():
-        if _loose_key(key) == want:
+        if _loose_key(_key_base(key)) == loose and _adj_compatible(val, want):
             code = val.get("code") if isinstance(val, dict) else val
             if code:
                 hits[str(code).strip().lower()] = val
@@ -421,9 +474,20 @@ def _sa_norm(x: Optional[str]) -> str:
 def sa_matches(meta: Optional[dict], sa_hint: str) -> bool:
     """SA cross-check: read sa_hint vs resolved metadata. Unknown on either side →
     can't disprove → True (don't block on missing info). saar~sa are both
-    seasonally adjusted; the real guard is sa-vs-nsa."""
+    seasonally adjusted; the real guard is sa-vs-nsa.
+
+    `sa_status` comes from the CATALOG. `Haver.metadata` has no such field (§17.2), and
+    this function is also called with DLX metadata — from `_meta_reject` on the learned
+    -entry path — where `got` was therefore always "" and the check always passed. A
+    hard cross-check documented as catching a silent-wrong mis-bind was, on that path,
+    doing nothing at all. Falling back to the descriptor parenthetical is the same
+    signal D18 already trusts to tell an SA/NSA twin apart, so this adds no new
+    assumption; it just stops throwing the signal away when the catalog is not the
+    source.
+    """
     want = _sa_norm(sa_hint)
-    got = _sa_norm((meta or {}).get("sa_status") or (meta or {}).get("sa"))
+    got = (_sa_norm((meta or {}).get("sa_status") or (meta or {}).get("sa"))
+           or _sa_of_descriptor((meta or {}).get("descriptor") or ""))
     if not want or not got:
         return True
     if want in ("sa", "saar") and got in ("sa", "saar"):
@@ -1149,7 +1213,7 @@ def resolve_slot(slot: dict, *,
     # 3a) LEARNED fast-path (Part 4): a previously-approved description binds instantly
     # — but still re-confirmed + hard-meta cross-checked (a stale code or a metadata
     # change must never silent-serve from the cache).
-    lk = learned_lookup(learned, read_desc)
+    lk = learned_lookup(learned, read_desc, slot.get("sa_hint") or "")
     lcode = (lk or {}).get("code") if isinstance(lk, dict) else lk
     if lcode and confirm(lcode):
         lmeta = get_meta(lcode) if get_meta else None

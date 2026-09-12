@@ -279,7 +279,8 @@ def resolve_one(base_descriptor: str, applied_transform: str = "", formula: str 
     # answer is what needs correcting.
     from_memory = bool(
         resolved and slot.get("bound_via_query") == "(learned)"
-        and R.learned_lookup(CHAT.load(), base_descriptor) is not None)
+        and R.learned_lookup(CHAT.load(), base_descriptor,
+                             slot.get("sa_hint") or "") is not None)
     reason = slot.get("reason") or ""
     if from_memory:
         reason = (f"{reason} — from your chat memory; call forget_binding"
@@ -753,7 +754,12 @@ def remember_binding(base_descriptor: str, code_at_db: str,
                 f"with resolve_series first; a remembered bind that does not resolve "
                 f"turns one bad answer into a permanent one")
         meta = R.haver_metadata(code) or {}
-    entry = CHAT.remember(base_descriptor, code, source=source, note=note)
+    # From the CONFIRMED series, not from any hint the caller passed: this is the field
+    # that decides which key the answer is filed under, and an SA/NSA twin filed under
+    # the wrong one is the bug this exists to close.
+    adjustment = R._sa_of_descriptor(str(meta.get("descriptor") or ""))
+    entry = CHAT.remember(base_descriptor, code, source=source, note=note,
+                          adjustment=adjustment)
     return {"stored": True, "operator": CHAT.operator_identity()[0],
             "description": base_descriptor, "code": code,
             "dlx_descriptor": str(meta.get("descriptor") or ""),

@@ -3798,3 +3798,99 @@ over mixed series. This lane sees price indexes and growth rates far more often 
 flows, and an unnecessary trading-day regression is a silent distortion rather than a
 loud failure. `sa(X, trading=1)` is there for the flow case, and now reports honestly
 when the regression fails (§20.4).
+
+## 21. The 2026-09-11 incident review
+
+Three complaints in one morning, and they turned out to be three unrelated faults. Kept
+together because the *investigation* is the reusable part: what could be answered from
+the host, and what could not.
+
+### 21.1 The lane died inside Haver's own DLL
+
+`python.exe` took an access violation at 09:27:32 with `InProcessClient64.dll` (Haver's
+DLX client, v24.1.5.277) as the faulting module. A native crash, so there was no Python
+traceback and nothing appeared in the lane's error log. The tunnel then logged two
+connections to `127.0.0.1:8100` forcibly closed and three "unable to reach the origin
+service" — which is exactly the "timed out twice, then failed three times" reported.
+
+`McpLaneEnsure` found the process gone and started it at 09:29:30. **Under two minutes,
+unattended.** The supervisor did its job.
+
+This is not a lane bug and there is no fix on our side: `bplus64.exe`, Haver's own engine,
+took the same `0xc0000005` **eight times in the preceding 35 days**. Haver's native code
+is not stable on this host. The posture is fast detection and fast recovery, not
+prevention.
+
+### 21.2 Why Slack stayed quiet, and why that was correct but useless
+
+`McpHealthWatch` polls hourly at :37. The outage ran 09:27:34 to 09:29:30 — entirely
+between two polls. Both saw a healthy lane, the recorded state never left `OK`, and
+`Send-Alert` fires only on a state change. Nothing was broken; the sampling rate simply
+cannot see a two-minute event.
+
+Worth stating because it inverts the obvious reading: **a healthy sweep says nothing at
+all**, so Slack silence means "nothing detected", never "nothing happened".
+
+The gap that matters: the supervisor logs `STARTED` — which specifically means *I found
+this lane dead*, as opposed to `RESTARTED` — and tells nobody. That is a crash signal,
+already detected inside five minutes, going only to a text file. Not fixed here.
+
+### 21.3 The evidence had already been deleted
+
+`Start-Process -RedirectStandardOutput` opens the log for write, which truncates it. With
+the 02:30 recycle, no lane log ever survived 24 hours. `Rotate-Log` looked like it covered
+this and did not — it only moved a file once it passed `-MaxLogMB`, which never happens at
+the sizes these logs reach.
+
+So a colleague's failed picker save the previous afternoon could not be diagnosed at all.
+Fixed in `2026_haver_mcp` (`94ef3d2`): archive any non-empty log to a timestamped name at
+start, prune past `-KeepLogDays`. `-MaxLogMB` is gone — it read like a retention policy and
+enforced none.
+
+The general lesson: **a log that only exists between restarts is not a log**, and the
+restart is exactly correlated with the incidents worth reading about.
+
+### 21.4 The picker's Save halts on the first refusal
+
+The panel calls `remember_binding` itself, sequentially, and stops at the first DLX refusal
+with *"Nothing after this one was saved."* That is the error the colleague saw, and his four
+entries one second apart are the signature of that loop. The halt is deliberate — saving
+three of five and continuing would build a chart he never approved — so it works as
+designed, but the message reads like total failure when four rows did save. Not changed
+here; noted as a UX defect with a known cause.
+
+### 21.5 SA/NSA twins shared one memory — two defects, either one fatal
+
+His store held `uccxfdg@cpidata` (SA) under
+`cpi-u: commodities less food and energy commodities (core goods)`, and an NSA request for
+the same descriptor reaches the same key. `_norm_key` cannot tell the twins apart, because
+`descriptor_exact` strips the very units parenthetical that distinguishes them.
+
+**Defect one — the key.** Whichever twin was answered second silently destroyed the first,
+and the descriptor then re-parked forever, because whatever is stored is wrong for half the
+requests. Keys are now qualified with the adjustment when it is known. `U+241F` is
+printable, so the JSON stays readable, and is outside anything `_norm_key` can emit, so it
+cannot collide.
+
+Unqualified keys still resolve, deliberately: every store on disk was written before this,
+and orphaning them would re-ask every park ever recorded — the failure §15.3 already calls
+the one that looks exactly like success. They are superseded as they are re-answered, so no
+migration runs against live stores.
+
+The stored adjustment is read from the **DLX metadata of the confirmed code**, never from
+the caller's `sa_hint`. The hint is what the model guessed, and the reason a park reached a
+human at all is that the guess was in doubt.
+
+**Defect two — the guard that was supposed to catch it.** `sa_matches` read
+`meta["sa_status"]`. That field comes from the **catalog**; `Haver.metadata` has no SA field
+at all (§17.2 says so, and D18 exists precisely because of it). On the learned-entry path
+`_meta_reject` is fed DLX metadata, so `got` was always `""`, so the check always passed. A
+hard cross-check documented as catching a silent-wrong mis-bind was, on that path, doing
+nothing whatsoever. It now falls back to `_sa_of_descriptor`, the same signal D18 already
+trusts.
+
+The layering is what makes the legacy fallback safe: an unqualified entry can still be
+*offered* for a mismatched request, and the repaired guard then rejects it against DLX.
+Wrong numbers need both defects; either fix alone closes the path.
+
+Pinned in §16 of the self-test (187/187).

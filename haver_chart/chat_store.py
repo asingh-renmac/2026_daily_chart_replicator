@@ -132,13 +132,19 @@ def load(operator: Optional[str] = None) -> dict:
 
 
 def remember(description: str, code_at_db: str, *, source: str = "park_resolution",
-             note: str = "", operator: Optional[str] = None) -> dict:
+             note: str = "", adjustment: str = "",
+             operator: Optional[str] = None) -> dict:
     """Record `description → code@db` for this operator. Returns the written entry.
 
     The caller is responsible for the code being HUMAN-CHOSEN; `lane.remember_binding`
     DLX-confirms it first so a hallucinated ticker cannot enter the store. That guard
     proves the series EXISTS, not that it is the right one — only the operator can say
     that, which is why `forget` (D4) exists.
+
+    `adjustment` must be read from the DLX metadata of the code being stored, never from
+    the caller's SA hint: the hint is what the model GUESSED, and the reason this park
+    reached a human at all is that the guess was in doubt. Filing an entry under the
+    guess would put it beside a series it is not.
     """
     slug = operator or operator_identity()[0]
     path = store_path(slug)
@@ -146,8 +152,9 @@ def remember(description: str, code_at_db: str, *, source: str = "park_resolutio
     blob["_schema"] = _SCHEMA
     if not blob.get("_operator"):
         blob["_operator"] = operator_identity()[1]
-    key = R._norm_key(description)
+    key = R.store_key(description, adjustment)
     entry = {"code": code_at_db, "descriptor": description,
+             "adjustment": R._sa_norm(adjustment),
              "added": datetime.now(timezone.utc).isoformat(),
              "source": source, "note": note}
     blob["entries"][key] = entry
@@ -163,11 +170,21 @@ def forget(description: str, operator: Optional[str] = None) -> bool:
 
     A wrong binding has to be revocable without hand-editing JSON on a network share —
     otherwise the operator's only remedy for a bad memory is to stop trusting the whole
-    store."""
+    store.
+
+    Removes EVERY adjustment variant of the descriptor, not just the exact key. D4 is a
+    promise that one call revokes what the operator saw, and they saw a descriptor —
+    they have no way to know the store split it into an SA row and an NSA row, so a
+    forget that left the twin behind would look like it silently failed.
+    """
     path = store_path(operator)
     blob = _read(path)
-    if blob["entries"].pop(R._norm_key(description), None) is None:
+    base = R._norm_key(description)
+    doomed = [k for k in blob["entries"] if R._key_base(k) == base]
+    if not doomed:
         return False
+    for k in doomed:
+        blob["entries"].pop(k, None)
     _write_atomic(path, blob)
     return True
 
