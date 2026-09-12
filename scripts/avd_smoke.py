@@ -48,6 +48,47 @@ for case in cases:
 
 print(f"transform parser : {passed} passed, {failed} failed  (of {len(cases)})")
 
+# A pull can add a dependency, and nothing upstream of here notices: the lane imports
+# statsmodels lazily, so a host short of it starts fine and serves fine until the first
+# sa() formula. Checking distribution names rather than import names sidesteps the
+# Haver/psycopg[binary]/python-dotenv naming mismatches for free.
+import importlib.metadata as _md  # noqa: E402
+import re as _re                  # noqa: E402
+
+missing = []
+for line in (ROOT / "haver_chart" / "requirements.txt").read_text(encoding="utf-8").splitlines():
+    line = line.split("#")[0].strip()
+    if not line:
+        continue
+    name, _, want = line.partition("==")
+    name = _re.sub(r"\[.*\]", "", name).strip()
+    try:
+        have = _md.version(name)
+    except _md.PackageNotFoundError:
+        missing.append(f"{name} MISSING (want {want})")
+        continue
+    if want and have != want:
+        missing.append(f"{name} {have} (want {want})")
+
+if missing:
+    failed += 1
+    print("dependencies     : " + str(len(missing)) + " problem(s)")
+    for m in missing:
+        print(f"  {m}")
+    print('  fix: & "C:\\Users\\madz\\envs\\haver-chart\\Scripts\\python.exe" -m pip '
+          "install -r haver_chart\\requirements.txt")
+else:
+    print("dependencies     : all pinned versions present")
+
+# The X-13 binary is the half pip cannot supply. Pure filesystem probe, so it reports
+# honestly even when statsmodels is the thing that is missing.
+import os as _os  # noqa: E402
+
+_cands = [_os.environ.get("X13PATH")] + [
+    r"C:\Users\asingh\tools\winx13\x13as", r"C:\Users\madz\Work\asingh\tools\winx13\x13as"]
+_x13 = next((c for c in _cands if c and (Path(c) / "x13as.exe").exists()), None)
+print(f"X-13 binary      : {_x13 or 'NOT FOUND -- run scripts/avd_install_x13.ps1 -Apply'}")
+
 store = CHAT.describe()
 print(f"chat store       : operator={store['operator']} entries={store['entries']}")
 print(f"                   {store['path']}")

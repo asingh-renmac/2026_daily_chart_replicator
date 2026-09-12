@@ -406,7 +406,15 @@ def _x13_setup_once():
     if d is None:
         raise NeedPin("SA", "X-13 is not installed — looked at X13PATH and "
                             + ", ".join(_X13_CANDIDATES))
-    X13.setup_x13(x13_dir=d, quiet=True)
+    # statsmodels drives the binary; it is imported lazily INSIDE the wrapper, so a host
+    # missing it gets a bare ModuleNotFoundError from three frames down instead of
+    # something that names the fix. Two halves of one install — the binary and the
+    # driver — and a host can have either without the other.
+    try:
+        X13.setup_x13(x13_dir=d, quiet=True)
+    except ModuleNotFoundError as exc:
+        raise NeedPin("SA", f"{exc.name} is not installed in this interpreter — "
+                            f"pip install -r haver_chart/requirements.txt") from exc
     _X13_READY = True
 
 

@@ -17,6 +17,13 @@ matplotlib==3.10.8
 pandas==2.3.3
 pyarrow==23.0.1          # parquet cache behind g4_lib.pull
 
+# Drives the X-13ARIMA-SEATS binary behind the sa() formula wrapper (src/transforms.py
+# -> src/x13_seasonal_adjust.py). Pulls scipy and patsy transitively. The binary itself
+# is NOT a pip package — install it with scripts/avd_install_x13.ps1. Both halves are
+# needed: without the binary sa() parks, without this it raised ModuleNotFoundError
+# from inside the wrapper until the guard in _x13_setup_once.
+statsmodels==0.14.6
+
 # Haver DLX client. Requires a licensed DLX install on the machine; the package
 # alone pulls nothing.
 Haver==3.5.1

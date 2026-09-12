@@ -80,6 +80,6 @@ git merge -q --ff-only origin/main
 
 ""
 "=== smoke test (no DLX) ==="
-& "C:\Users\madz\envs\haver-chart\Scripts\python.exe" scripts\avd_smoke.py 2>&1 | Select-Object -Last 8
+& "C:\Users\madz\envs\haver-chart\Scripts\python.exe" scripts\avd_smoke.py 2>&1 | Select-Object -Last 16
 ""
 "Still to do, as the interactive owner at RDP: selftest.py, then restart the server."
