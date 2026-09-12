@@ -18,11 +18,23 @@ pandas==2.3.3
 pyarrow==23.0.1          # parquet cache behind g4_lib.pull
 
 # Drives the X-13ARIMA-SEATS binary behind the sa() formula wrapper (src/transforms.py
-# -> src/x13_seasonal_adjust.py). Pulls scipy and patsy transitively. The binary itself
-# is NOT a pip package — install it with scripts/avd_install_x13.ps1. Both halves are
-# needed: without the binary sa() parks, without this it raised ModuleNotFoundError
-# from inside the wrapper until the guard in _x13_setup_once.
-statsmodels==0.14.6
+# -> src/x13_seasonal_adjust.py), and supplies the HP filter (transforms._ev_hp). Pulls
+# scipy and patsy transitively. The binary itself is NOT a pip package — install it with
+# scripts/avd_install_x13.ps1. Both halves are needed: without the binary sa() parks,
+# without this it raised ModuleNotFoundError from inside the wrapper until the guard in
+# _x13_setup_once.
+#
+# A RANGE, alone in this file, and the reason is worth knowing. For X-13 statsmodels is
+# plumbing, not arithmetic: it writes a spec file, runs x13as.exe and parses the output,
+# so the numbers come from the BINARY, which is pinned by SHA256 in avd_install_x13.ps1.
+# Measured 2026-09-12 with scripts/x13_version_probe.py — 0.14.6 and 0.15.0 agree to
+# every printed digit on both X-13 paths AND on hpfilter, which is the one that really is
+# statsmodels' own arithmetic. Pinning exactly would have forced a pointless downgrade on
+# a host that had already installed 0.15.0.
+#
+# The upper bound is not decoration. setup_x13() imports `_find_x12`, a PRIVATE function,
+# so a minor bump is exactly where this breaks. Re-run the probe before raising it.
+statsmodels>=0.14.6,<0.16
 
 # Haver DLX client. Requires a licensed DLX install on the machine; the package
 # alone pulls nothing.

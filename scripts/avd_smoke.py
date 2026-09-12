@@ -55,19 +55,33 @@ print(f"transform parser : {passed} passed, {failed} failed  (of {len(cases)})")
 import importlib.metadata as _md  # noqa: E402
 import re as _re                  # noqa: E402
 
+try:
+    from packaging.requirements import Requirement  # ships with pip's vendor tree
+except ImportError:                                 # pragma: no cover
+    Requirement = None
+
 missing = []
 for line in (ROOT / "haver_chart" / "requirements.txt").read_text(encoding="utf-8").splitlines():
     line = line.split("#")[0].strip()
     if not line:
         continue
-    name, _, want = line.partition("==")
-    name = _re.sub(r"\[.*\]", "", name).strip()
+    if Requirement is not None:
+        # Parsed rather than split on '=='. statsmodels is pinned as a RANGE, and a
+        # partition('==') quietly yields an empty spec for it -- so the one dependency
+        # with a non-trivial constraint would be the one nothing checked.
+        req = Requirement(line)
+        name, want = req.name, str(req.specifier) or "any"
+        ok = lambda v: req.specifier.contains(v, prereleases=True)
+    else:
+        name, _, pin = line.partition("==")
+        name, want = _re.sub(r"\[.*\]", "", name).strip(), pin or "any"
+        ok = lambda v, _p=pin: (not _p) or v == _p
     try:
         have = _md.version(name)
     except _md.PackageNotFoundError:
         missing.append(f"{name} MISSING (want {want})")
         continue
-    if want and have != want:
+    if not ok(have):
         missing.append(f"{name} {have} (want {want})")
 
 if missing:
