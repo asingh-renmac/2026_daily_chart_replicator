@@ -3832,8 +3832,29 @@ Worth stating because it inverts the obvious reading: **a healthy sweep says not
 all**, so Slack silence means "nothing detected", never "nothing happened".
 
 The gap that matters: the supervisor logs `STARTED` — which specifically means *I found
-this lane dead*, as opposed to `RESTARTED` — and tells nobody. That is a crash signal,
-already detected inside five minutes, going only to a text file. Not fixed here.
+this lane dead*, as opposed to `RESTARTED` — and told nobody. That is a crash signal,
+already detected inside five minutes, that went only to a text file.
+
+**Fixed 2026-09-12.** `Send-CrashAlert` posts to Slack from the `STARTED` branch of
+`Ensure`, and from the cloudflared equivalent — a stopped tunnel takes every lane dark at
+once and looks from outside like all three died together. Three things make it useful
+rather than noisy:
+
+- **It names the faulting module.** `Get-CrashContext` reads the most recent
+  `Application Error` event and renders `python.exe crashed in InProcessClient64.dll
+  (0xc0000005) at 09:27:32`. Verified against the real 09-11 event. "haver-chart
+  restarted" prompts an investigation; that line ends one.
+- **One message per lane per 30 minutes.** Ensure runs every five minutes, so a
+  crash-looping lane would post twelve times an hour, and a muted channel is the same
+  blindness relocated. The cooldown predicate is pure and pinned in `-SelfTest` (13/13),
+  including that one lane's cooldown never silences another.
+- **`-TestAlert` exercises the path on demand.** An alert path is otherwise only ever run
+  by the event it exists to report, so a broken webhook stays broken until the outage it
+  was meant to announce.
+
+This does not replace the hourly watch, which catches the slow failure — a lane that
+answers HTTP while DLX refuses every pull. The two see different things: one watches for
+a process that vanished, the other for a process that lies.
 
 ### 21.3 The evidence had already been deleted
 
