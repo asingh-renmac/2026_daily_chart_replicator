@@ -23,6 +23,7 @@ import shutil
 import sys
 import threading
 import time
+import traceback
 import uuid
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -151,7 +152,20 @@ _DEV_HINT = re.compile(r"\s*[—–-]\s*extend build_chart[^)]*\)")
 
 
 def explain(exc: BaseException) -> str:
-    """Type-prefixed message, with the accepted wordings on an unmapped transform."""
+    """Type-prefixed message, with the accepted wordings on an unmapped transform.
+
+    Also writes the FULL traceback to stderr, which is the lane's log file. Masking
+    (`mask_error_details=True` over HTTP) is about what the CLIENT may see; it was never
+    meant to blind the operator too. Without this an unintentional exception reaches the
+    client as "Error occurred during tool execution" and leaves NOTHING behind — the HTTP
+    request is still a 200, because the error travels inside the payload — so there is
+    no traceback, no line number, and no way to tell a bug from a timeout after the fact.
+    Diagnosing one then costs a reproduction on the host, which is exactly the thing a
+    log line is supposed to make unnecessary. Every call site funnels through here, so
+    this is the one place it needs to happen.
+    """
+    traceback.print_exc(file=sys.stderr)
+    sys.stderr.flush()
     raw = str(exc)
     if "unmappable applied_transform" not in raw:
         return f"{type(exc).__name__}: {raw}"
