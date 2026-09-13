@@ -741,6 +741,59 @@ def _strip_lag(text: str) -> str:
     return _LAG_RE.sub(" ", text or "").strip()
 
 
+# ─────────────────────── economics vocabulary aliases ───────────────────────
+# The gap these close is VOCABULARY, not ranking, and it is the one neither retriever
+# can cross on its own. Measured 2026-09-13: "Core PCE services price index" does not
+# have usna:jcsxem ("PCE: Services Excluding Energy: Chain Price Index") in the top 100
+# lexically, nor in the top 500 by vector with hnsw.ef_search at 1000 — but rewrite the
+# single word "core" as "excluding energy" and it lands at rank 5. voyage-4 does not know
+# the trade convention either, so no amount of embedding fixes it; the convention has to
+# be written down.
+#
+# ALTERNATIVE queries, never a rewrite in place. `websearch_to_tsquery` ANDs its terms, so
+# substituting "excluding food and energy" into a query whose target says only "Excluding
+# Energy" adds a "food" that must match and retrieves NOTHING. The resolver already issues
+# several attempts and unions the hits, so each expansion is offered as one more attempt
+# and the wrong ones simply return nothing.
+#
+# Every value is Haver's OWN wording, counted in the catalog rather than assumed —
+# "less food and energy" (39 descriptors) and "excluding food and energy" (94) are BOTH
+# in use, which is exactly why one expansion per term would not be enough.
+_ECON_ALIASES: dict[str, tuple[str, ...]] = {
+    # "Core" is the big one, and note it is deliberately NOT expanded to a single form:
+    # CPI/PCE headline core is food-and-energy, but a services aggregate is energy only.
+    "core": ("excluding food and energy", "less food and energy", "excluding energy"),
+    "headline": ("all items",),
+    "supercore": ("services excluding housing", "services excluding energy and housing"),
+    "ex food and energy": ("excluding food and energy", "less food and energy"),
+}
+
+# Capped because each attempt is a Neon round-trip (~1.5s measured) and the picker is
+# already the slowest thing the operator waits on. Three extra is two more chances than
+# the query had before and still under the DLX cost that dominates the same panel.
+_MAX_ALIAS_ATTEMPTS = 3
+
+
+def alias_variants(desc: str) -> list[str]:
+    """Alternative phrasings of `desc` using Haver's wording for economics shorthand.
+
+    Returns [] when the description contains no shorthand, which is the common case — so
+    this costs nothing on the queries that were already working."""
+    low = (desc or "").lower()
+    out: list[str] = []
+    for term, phrasings in _ECON_ALIASES.items():
+        # Word-boundary, or "core" matches "Cored Slabs" and "Fiber Cores" — 3,895 of the
+        # catalog's "core" descriptors are PPI product names, not the economics sense.
+        pat = re.compile(rf"\b{re.escape(term)}\b", re.IGNORECASE)
+        if not pat.search(low):
+            continue
+        for phrase in phrasings:
+            variant = re.sub(r"\s+", " ", pat.sub(phrase, desc)).strip()
+            if variant.lower() != low and variant not in out:
+                out.append(variant)
+    return out[:_MAX_ALIAS_ATTEMPTS]
+
+
 def build_search_attempts(slot: dict) -> list[dict]:
     """Ordered, de-duped search attempts for a description-only slot. Each is
     {query, databases, sa_status}; the resolver issues all and unions the hits."""
@@ -764,6 +817,10 @@ def build_search_attempts(slot: dict) -> list[dict]:
         geo = lead[0] if lead else ""                # geography/source lead word
         add(f"{geo} {after}")                        # geo + discriminator
         add(after)                                   # discriminator alone
+    # Last, so the operator's own words always get the first look and an alias can only
+    # ADD reach. `add` de-dupes, so a description already using Haver's wording is free.
+    for variant in alias_variants(desc):
+        add(variant)
     return out
 
 

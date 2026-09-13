@@ -1185,6 +1185,41 @@ check(_forgot and sorted(_written["entries"]) == [R._norm_key("something else")]
 check(_missing is False,
       "and forgetting an unknown descriptor still reports False")
 
+print("\n17. Economics shorthand reaches Haver's wording")
+# The gap these close is vocabulary, not ranking: measured 2026-09-13, "Core PCE services
+# price index" had usna:jcsxem ("PCE: Services Excluding Energy") nowhere in the top 100
+# lexically NOR the top 500 by vector, and rewriting one word put it at rank 5. Offline
+# checks -- the catalog counts behind the table are quoted in resolve.py, and a selftest
+# that needed Neon would stop being run.
+_core = R.alias_variants("Core PCE services price index")
+check(bool(_core), "'core' produces alternative phrasings",
+      "without this the one word the catalog never uses for this series sinks the query")
+check(any("excluding energy" in v.lower() for v in _core)
+      and any("food and energy" in v.lower() for v in _core),
+      "and BOTH conventions, because Haver uses both",
+      "headline core is food-and-energy, a services aggregate is energy only; one "
+      "expansion would answer only half the questions")
+check(R.alias_variants("PPI: Fiber Cores & Tubes") == [],
+      "'Cores' in a product name expands to nothing",
+      "3,895 catalog descriptors say 'core' as fibre cores and cored slabs; a substring "
+      "match would rewrite PPI product queries into economics ones")
+check(R.alias_variants("PCE: Info Processing Equip Price Index") == [],
+      "a description with no shorthand costs nothing",
+      "every expansion is another Neon round-trip, so the common case must stay free")
+check(len(R.alias_variants("core headline supercore")) <= R._MAX_ALIAS_ATTEMPTS,
+      "the number of extra attempts is capped",
+      "the picker is already the slowest thing the operator waits on")
+_atts = [a["query"] for a in R.build_search_attempts(
+    {"description": "Core PCE services price index",
+     "base_descriptor": "Core PCE services price index"})]
+check(_atts and _atts[0] == "Core PCE services price index",
+      "the operator's own words are still tried FIRST",
+      "an alias may only add reach; it must never displace what was actually asked")
+check(all(v in _atts for v in _core),
+      "and each phrasing is an ALTERNATIVE attempt, not a rewrite",
+      "websearch_to_tsquery ANDs its terms, so substituting 'excluding food and energy' "
+      "into a query whose target says only 'Excluding Energy' would match NOTHING")
+
 n_bad = sum(1 for ok, _, _ in _RESULTS if not ok)
 print("\n" + "=" * 78)
 print(f"{len(_RESULTS) - n_bad}/{len(_RESULTS)} checks passed"
