@@ -1220,6 +1220,24 @@ check(all(v in _atts for v in _core),
       "websearch_to_tsquery ANDs its terms, so substituting 'excluding food and energy' "
       "into a query whose target says only 'Excluding Energy' would match NOTHING")
 
+# The desk's hand-maintained phrase list, layered over the word table above.
+check(len(R._phrase_aliases()) > 1000,
+      "the econ_aliases.csv phrase list loads",
+      "it ships in fixtures/ because notes/ is gitignored and would never reach the AVD")
+check("Four-week moving average of initial UI claims"
+      in R.alias_variants("4WMA claims"),
+      "an alias that IS the whole query becomes its canonical name",
+      "this is the case the phrase list is unambiguously good at")
+check(any("less food and energy" in v.lower() for v in R.alias_variants("core CPI")),
+      "'core CPI' picks up the CPI sense from the phrase list")
+check(not any("CPI-U" in v for v in R.alias_variants("Core PCE services price index")),
+      "but a SHORT alias inside a LONG query does not get substituted",
+      "the CSV files 'core' as the CPI sense; pasting that into a PCE services question "
+      "retrieves nothing for usna:jcsxem, where the word table reaches it at rank 5. "
+      "Coverage threshold, not cleverness, is what keeps the two senses apart")
+check(R.alias_variants("PPI: Fiber Cores & Tubes") == [],
+      "and neither layer fires on a product name that merely contains 'cores'")
+
 n_bad = sum(1 for ok, _, _ in _RESULTS if not ok)
 print("\n" + "=" * 78)
 print(f"{len(_RESULTS) - n_bad}/{len(_RESULTS)} checks passed"

@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import os
+import csv
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -773,6 +774,48 @@ _ECON_ALIASES: dict[str, tuple[str, ...]] = {
 # the query had before and still under the DLX cost that dominates the same panel.
 _MAX_ALIAS_ATTEMPTS = 3
 
+# ── the desk's own alias list, 1,265 phrases, maintained by hand in the CSV ──
+# The table above maps single WORDS to phrasings; this maps whole PHRASES to the canonical
+# series name ("4WMA claims" -> "Four-week moving average of initial UI claims"). Both are
+# needed, and it is worth recording why, because the obvious simplification is to keep only
+# this one: the CSV is single-valued per alias, and "core" alone is entered as the CPI
+# sense ("CPI-U all items less food and energy"). Substituting that into "Core PCE services
+# price index" retrieves NOTHING for usna:jcsxem, where the word-level "excluding energy"
+# puts it at rank 5 (both measured 2026-09-13). One alias, two senses, decided by what
+# follows it — which is exactly what a phrase table cannot express and a word table can.
+_ALIAS_CSV = Path(__file__).resolve().parent.parent / "fixtures" / "econ_aliases.csv"
+
+# A short alias sitting inside a long query is ambiguous — "core" is 1 word of 5 in the
+# example above — and substituting on that evidence is how the CPI sense hijacks a PCE
+# question. Requiring the alias to account for most of the query keeps this layer to the
+# case it is actually good at: the whole query IS the shorthand ("4WMA claims", "core CPI").
+_ALIAS_COVERAGE_MIN = 0.6
+
+_PHRASE_ALIASES: Optional[dict[str, str]] = None
+
+
+def _phrase_aliases() -> dict[str, str]:
+    """{normalized alias: canonical series name}, read once from the CSV.
+
+    Missing or unreadable file yields {} rather than raising: this layer is an ENHANCEMENT
+    to retrieval, and a resolver that refuses to start because a vocabulary file moved
+    would be a far worse failure than one that searches slightly less well."""
+    global _PHRASE_ALIASES
+    if _PHRASE_ALIASES is None:
+        out: dict[str, str] = {}
+        try:
+            with _ALIAS_CSV.open(encoding="utf-8-sig", newline="") as fh:
+                for row in csv.DictReader(fh):
+                    alias = (row.get("alias_normalized") or row.get("alias") or "").strip().lower()
+                    canon = (row.get("underlying_series") or "").strip()
+                    # Two-character aliases match inside ordinary words and buy nothing.
+                    if len(alias) >= 3 and canon:
+                        out.setdefault(alias, canon)
+        except Exception:
+            out = {}
+        _PHRASE_ALIASES = out
+    return _PHRASE_ALIASES
+
 
 def alias_variants(desc: str) -> list[str]:
     """Alternative phrasings of `desc` using Haver's wording for economics shorthand.
@@ -781,6 +824,21 @@ def alias_variants(desc: str) -> list[str]:
     this costs nothing on the queries that were already working."""
     low = (desc or "").lower()
     out: list[str] = []
+
+    # Phrase layer first: a matched desk alias is far stronger evidence than a single
+    # word, so it earns its attempt ahead of the word table when both fire.
+    n_words = len(re.findall(r"[a-z0-9]+", low)) or 1
+    best = ""
+    for alias in _phrase_aliases():
+        if len(alias) <= len(best):
+            continue
+        if re.search(rf"(?<![a-z0-9]){re.escape(alias)}(?![a-z0-9])", low):
+            best = alias
+    if best and len(re.findall(r"[a-z0-9]+", best)) / n_words >= _ALIAS_COVERAGE_MIN:
+        canon = _phrase_aliases()[best]
+        if canon.lower() != low:
+            out.append(canon)
+
     for term, phrasings in _ECON_ALIASES.items():
         # Word-boundary, or "core" matches "Cored Slabs" and "Fiber Cores" — 3,895 of the
         # catalog's "core" descriptors are PPI product names, not the economics sense.
