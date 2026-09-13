@@ -102,6 +102,14 @@ def _dlx_note(ok: bool) -> None:
     else:
         _dlx_suspect = True
 
+
+# `_dlx_verify` only fires on the bind path, so until this line the OTHER DLX caller —
+# `haver_metadata`, which breaks a descriptor-exact tie — could fail all morning without
+# moving `/health` one bit. That is not hypothetical: on 2026-09-13 the weekly sign-in
+# expired, resolve_series failed on exactly that path, and the watchdog's hourly sweep saw
+# `session_suspect: false` and stayed quiet. Both DLX callers now report to the same place.
+R.DLX_OBSERVER = _dlx_note
+
 # Unique filenames (see `_save_path`) mean this folder only grows, which is harmless on a
 # laptop and unbounded on a server that stays up for months. 0 disables the sweep.
 RETENTION_DAYS = int(os.environ.get("CHAT_RETENTION_DAYS", "14"))

@@ -948,6 +948,16 @@ _NSA_WORDS = re.compile(
 
 _METADATA_CACHE: dict[str, Optional[dict]] = {}
 
+# Called with False when DLX itself fails to answer, True when it does. The chat lane
+# points this at `lane._dlx_note` so the outcome reaches `/health`, which is what the
+# hourly watchdog reads. A module-level hook rather than an import because `src/` is
+# shared with the daily lane and must not grow a dependency on `haver_chart/`.
+#
+# Only an EXCEPTION counts as "DLX is down". An ErrorReport dict means DLX answered and
+# refused, which is equally what a mistyped ticker looks like (§17.14) — reporting that
+# as a session fault would fire on every bad code the operator types.
+DLX_OBSERVER: Optional[Callable[[bool], None]] = None
+
 
 def _meta_value(v) -> str:
     """Comparable, printable form of one DLX metadata cell (dates, Timestamps, ints)."""
@@ -971,6 +981,7 @@ def haver_metadata(code_at_db: str) -> Optional[dict]:
     if key in _METADATA_CACHE:
         return _METADATA_CACHE[key]
     out = None
+    answered = True                  # did DLX respond at all, rightly or wrongly?
     try:
         code, _, db = key.partition("@")
         if code and db:
@@ -980,8 +991,19 @@ def haver_metadata(code_at_db: str) -> Optional[dict]:
             if not isinstance(frame, dict) and frame is not None and len(frame):
                 out = {c: frame[c].iloc[0] for c in frame.columns}
     except Exception:
-        out = None
-    _METADATA_CACHE[key] = out
+        out, answered = None, False
+
+    if DLX_OBSERVER is not None:
+        DLX_OBSERVER(answered)
+
+    # Cache the ANSWER, never the outage. The old line cached unconditionally, so one
+    # failed call pinned None to that ticker for the life of the process — and since the
+    # weekly DLX sign-in expires under a lane that stays up for days, re-authenticating
+    # fixed nothing until the lane was also restarted. That restart was treated as part
+    # of the ritual; it was this line. Leaving the key unset costs one retried call and
+    # lets a re-signed session recover on its own.
+    if answered:
+        _METADATA_CACHE[key] = out
     return out
 
 
