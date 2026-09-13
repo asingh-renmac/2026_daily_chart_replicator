@@ -102,7 +102,10 @@ def main() -> int:
     for i, row in enumerate(sample, 1):
         alias = row["alias"]
         means = row.get("underlying_series") or ""
-        gid = row.get("entry_id") or f"G{i:04d}"
+        # NOT entry_id on its own: it identifies the SERIES, not the alias, and 1,265 rows
+        # share 529 of them ("labor force" and "LF" are both US0142). Keyed on it alone, two
+        # aliases land in one group and the compiler keeps whichever it reads first.
+        gid = f"{i:04d}-{row.get('entry_id') or 'NA'}"
         for c in candidates_for(alias, args.top):
             code = c.get("code") or ""
             out_rows.append({

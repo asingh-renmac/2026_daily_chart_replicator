@@ -55,14 +55,16 @@ def main() -> int:
     args = ap.parse_args()
 
     rows = list(csv.DictReader((ROOT / args.sheet).open(encoding="utf-8-sig")))
-    groups: dict[str, list[dict]] = defaultdict(list)
+    # Keyed on (group, alias), not group. entry_id names the SERIES and several aliases share
+    # one -- "labor force" and "LF" are both US0142 -- so grouping on it alone silently drops
+    # every alias but the first. Every row carries its own alias, so the pair is exact.
+    groups: dict[tuple[str, str], list[dict]] = defaultdict(list)
     for r in rows:
         if (r.get("group") or "").strip():
-            groups[r["group"]].append(r)
+            groups[(r["group"], r.get("alias") or "")].append(r)
 
     out, skipped, parks = [], [], 0
-    for gid, grp in groups.items():
-        alias = grp[0]["alias"]
+    for (gid, alias), grp in groups.items():
         picked = [r for r in grp if re.match(r"^\s*[xX✓y1]", r.get("pick") or "")]
         if not picked:
             skipped.append(alias)
