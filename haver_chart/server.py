@@ -947,14 +947,20 @@ if HTTP_ENABLED:
     }
 
     if (data.original_request) {
-      // Quoting the request verbatim is the point of the feature: "continue" alone left
-      // the model to guess what it was continuing. The circuit breaker matters as much --
-      // without it a save that lands under a key the next lookup misses becomes an
-      // endless park / pick / re-run loop, with the panel reappearing every time.
+      // Points at the request rather than quoting it back. The verbatim quote was there
+      // to stop a bare "continue" leaving the model to guess what it was continuing, but
+      // the request is a few lines up its own context either way, and re-pasting a long
+      // one buried the part that matters -- the bindings just saved -- under a wall of
+      // repeated text the operator had to read past (Aman 2026-09-13). Still guarded by
+      // `original_request` being present at all, which is what separates "the panel knows
+      // which request it came from" from "it does not".
+      //
+      // The circuit breaker below matters as much as the instruction: without it a save
+      // that lands under a key the next lookup misses becomes an endless park / pick /
+      // re-run loop, with the panel reappearing every time.
       var names = saved.map(function (s) { return "\\u201c" + s.description + "\\u201d"; })
                        .join(" or ");
-      tell(what + " Now re-run my original request exactly as I gave it: \\u201c" +
-           data.original_request + "\\u201d. If " + names +
+      tell(what + " Now re-run my above request again with this information. If " + names +
            " parks AGAIN after this, stop and tell me the save did not take \\u2014 do " +
            "not open the picker for it a second time.");
     } else {
@@ -1018,7 +1024,28 @@ if HTTP_ENABLED:
           i++; step();
         })
         .catch(function (err) {
-          note("Could not save \\u201c" + p.description + "\\u201d: " + err, "err");
+          // A TRANSPORT failure, unlike the isError branch above: the call never reached
+          // a tool. The usual cause is a dead MCP session -- the server answers POST /mcp
+          // with 404 once its in-memory session table no longer holds the id, which every
+          // restart guarantees -- and re-pressing Save cannot help, because the session
+          // stays dead however many times it is asked.
+          //
+          // So the button is no longer the recovery. Choosing five series out of thirty
+          // candidates is the expensive part of this panel and it used to evaporate here,
+          // leaving the operator to do the reading again (2026-09-13, and hchen on
+          // 2026-09-11 before that). ui/message is handled by the HOST rather than relayed
+          // to the server, so it still lands when tools/call does not -- which makes
+          // handing the choices back to the chat the one move that still works.
+          var left = [];
+          for (var j = i; j < ps.length; j++) {
+            if (picks[j]) { left.push(ps[j].description + " = " + picks[j]); }
+          }
+          note("Could not save \\u201c" + p.description + "\\u201d: " + err +
+               "\\n\\nYour choices were NOT lost \\u2014 they have been handed back to the "
+               + "chat, which can store them without this panel.", "err");
+          tell("The picker could not reach the server (" + err + "), so nothing below was "
+               + "saved. Do NOT open the picker again. Call remember_binding once for each "
+               + "of these, then re-run my above request: " + left.join("; "));
           document.getElementById("go").disabled = false;
         });
     }
