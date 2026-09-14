@@ -49,7 +49,7 @@ def norm_ticker(raw: str) -> str:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--sheet", default="outputs/alias_worksheet.csv")
+    ap.add_argument("--sheet", default="eval/alias_worksheet.csv")
     ap.add_argument("--out", default="eval/alias_eval_set.json")
     ap.add_argument("--reviewer", default="")
     args = ap.parse_args()

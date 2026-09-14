@@ -27,7 +27,9 @@ Picking a candidate also fills in ticker, frequency, adjustment and database by 
 the reviewer never types those.
 
     python scripts/build_alias_worksheet.py --n 200
-    -> outputs/alias_worksheet.csv   (open in Excel, put x in `pick`)
+    -> eval/alias_worksheet.csv   (open in Excel, put x in `pick`)
+       eval/ and NOT outputs/, which is gitignored: a day of human labelling is not a
+       build artefact and must not sit where a clean checkout drops it.
        then: python scripts/compile_alias_evalset.py
 """
 from __future__ import annotations
@@ -87,7 +89,7 @@ def main() -> int:
     ap.add_argument("--n", type=int, default=200)
     ap.add_argument("--top", type=int, default=8)
     ap.add_argument("--csv", default="fixtures/econ_aliases.csv")
-    ap.add_argument("--out", default="outputs/alias_worksheet.csv")
+    ap.add_argument("--out", default="eval/alias_worksheet.csv")
     args = ap.parse_args()
 
     rows = list(csv.DictReader((ROOT / args.csv).open(encoding="utf-8-sig")))
