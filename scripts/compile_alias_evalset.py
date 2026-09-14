@@ -63,6 +63,29 @@ def main() -> int:
         if (r.get("group") or "").strip():
             groups[(r["group"], r.get("alias") or "")].append(r)
 
+    # Rewording an alias is legitimate -- column B IS the query the resolver will be given --
+    # but it has to be done to EVERY row of the block, and Excel makes it very easy to edit
+    # the one row you happened to be reading. Since the key includes the alias, a half-done
+    # rename splits one block into two, and the half holding no tick is then reported as
+    # unreviewed. That is a confusing way to lose a label, so name it outright. Detected on
+    # CONTIGUOUS runs rather than on the group id, which cannot tell a partial rename from the
+    # duplicated entry_ids the source CSV genuinely has.
+    split: list[str] = []
+    run: list[dict] = []
+    for r in rows + [{"group": ""}]:
+        if (r.get("group") or "").strip():
+            run.append(r)
+            continue
+        names = {x.get("alias") or "" for x in run}
+        if len(names) > 1:
+            split.append(f"{run[0].get('group')}: " + " / ".join(sorted(names)))
+        run = []
+    if split:
+        print(f"WARNING: {len(split)} block(s) hold more than one alias -- a partial rename?")
+        for s in split[:5]:
+            print(f"   {s}")
+        print("   Fix: make column B identical on every row of the block, then re-run.\n")
+
     out, skipped, parks = [], [], 0
     for (gid, alias), grp in groups.items():
         picked = [r for r in grp if re.match(r"^\s*[xX✓y1]", r.get("pick") or "")]
