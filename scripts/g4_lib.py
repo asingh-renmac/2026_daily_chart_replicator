@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
@@ -64,6 +65,59 @@ def _cache_fresh(path: Path) -> bool:
     return age <= _CACHE_TTL_DAYS
 
 
+# A failed Haver.data() returns a dict rather than raising, and TWO very different things
+# arrive in that one shape. Haver's own codelists tell them apart:
+#
+#   codesnotfound: ['usecon:xyz']  -> the code really is not there. What a typo looks like.
+#                                     Retrying is pointless and just makes the operator wait.
+#   codesnotfound: [] AND
+#   codesfound:    []              -> DLX says it reached the database and then reports the
+#                                     code neither found NOR missing. That answer is
+#                                     internally inconsistent: it is not an answer at all.
+#
+# The second is what killed a render on 2026-09-15 09:04:50 for ypwm@usecon -- a current
+# monthly SAAR series -- while ypsvrm and pcufdeg pulled fine seconds before it and napmc
+# and emism seconds after. 78 seconds later the process died of heap corruption (0xc0000374
+# in ntdll), and the same ticker pulled 811 observations in the fresh process. So the empty
+# answer was not about the ticker; it was the in-process DLX client already corrupt.
+#
+# Retrying in-process is therefore a HOPE, not a guarantee -- the heap may already be gone,
+# and the evidence cannot say, because the pull that worked ran in a new process. It is worth
+# doing anyway: it is cheap, it costs nothing on the healthy path, and a transient blip that
+# resolves on attempt two turns a failed render into a two-second pause. The guaranteed fix
+# is to stop hosting Haver's native DLL in the server process at all (plan.md §21).
+_EMPTY_RETRIES = int(os.environ.get("HAVER_EMPTY_RETRIES", "2"))
+_EMPTY_BACKOFF = float(os.environ.get("HAVER_EMPTY_BACKOFF", "1.5"))
+
+
+def _missing_codes(df) -> list:
+    """The codes Haver positively reports as absent, [] if it did not say."""
+    if not isinstance(df, dict):
+        return []
+    return list((df.get("codelists") or {}).get("codesnotfound") or [])
+
+
+def _pull_frame(code: str, db: str, start: str):
+    """Haver.data(), retried only when Haver's answer contradicts itself."""
+    last = None
+    for attempt in range(_EMPTY_RETRIES + 1):
+        df = _haver().data([code], db, startdate=start)
+        if df is not None and not isinstance(df, dict):
+            if attempt:
+                print(f"  recovered {code}@{db} on attempt {attempt + 1}")
+            return df
+        last = df
+        # A positively-absent code is a real answer. Fail NOW rather than making a mistyped
+        # ticker take three round-trips before it says so.
+        if _missing_codes(df):
+            break
+        if attempt < _EMPTY_RETRIES:
+            print(f"  {code}@{db}: DLX returned no answer (attempt {attempt + 1} of "
+                  f"{_EMPTY_RETRIES + 1}), retrying in {_EMPTY_BACKOFF}s", flush=True)
+            time.sleep(_EMPTY_BACKOFF)
+    raise RuntimeError(f"Haver returned no data for {code}@{db}: {last!r}")
+
+
 def pull(code: str, db: str, freq: str, start: str = "1959-01-01") -> T.SeriesData:
     """Pull one Haver series; cache to parquet; return a period-END SeriesData.
 
@@ -78,10 +132,7 @@ def pull(code: str, db: str, freq: str, start: str = "1959-01-01") -> T.SeriesDa
     if _cache_fresh(cache):
         s = pd.read_parquet(cache).iloc[:, 0]
     else:
-        Haver = _haver()
-        df = Haver.data([code], db, startdate=start)
-        if df is None or (isinstance(df, dict)):
-            raise RuntimeError(f"Haver returned no data for {code}@{db}: {df!r}")
+        df = _pull_frame(code, db, start)
         s = df.iloc[:, 0]
         if isinstance(s.index, pd.PeriodIndex):
             s.index = s.index.to_timestamp()

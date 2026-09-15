@@ -1238,6 +1238,60 @@ check(not any("CPI-U" in v for v in R.alias_variants("Core PCE services price in
 check(R.alias_variants("PPI: Fiber Cores & Tubes") == [],
       "and neither layer fires on a product name that merely contains 'cores'")
 
+print("\n18. A contradictory answer from DLX is retried; a missing code is not")
+# 2026-09-15 09:04:50: ypwm@usecon -- a current monthly SAAR series -- came back with
+# codesfound AND codesnotfound both empty, while ypsvrm and pcufdeg pulled fine seconds
+# before and napmc and emism seconds after. 78s later the process died of heap corruption
+# (0xc0000374, ntdll) and the same ticker returned 811 observations in the fresh one. The
+# distinction below is the whole fix: Haver reports a real absence in codesnotfound, so a
+# response naming NEITHER is not an answer and is the only one worth asking twice for.
+import g4_lib as _G4                                                    # noqa: E402
+
+_INCONSISTENT = {"databasepath": "remote (DLX Direct)",
+                 "codelists": {"codesfound": [], "databaseaccess": ["usecon:ypwm"],
+                               "codesnotfound": [], "metadataaccess": []}}
+_ABSENT = {"databasepath": "remote (DLX Direct)",
+           "codelists": {"codesfound": [], "databaseaccess": ["usecon:nosuch"],
+                         "codesnotfound": ["usecon:nosuch"], "metadataaccess": []}}
+
+
+class _FakeHaver:
+    def __init__(self, script):
+        self.script, self.calls = list(script), 0
+
+    def data(self, codes, db, startdate=None):
+        self.calls += 1
+        return self.script.pop(0) if self.script else "FRAME"
+
+
+def _run_pull(script):
+    fake = _FakeHaver(script)
+    _real, _G4._haver = _G4._haver, lambda: fake
+    _back, _G4._EMPTY_BACKOFF = _G4._EMPTY_BACKOFF, 0.0
+    try:
+        _G4._pull_frame("ypwm", "usecon", "1959-01-01")
+        return fake.calls, True
+    except RuntimeError:
+        return fake.calls, False
+    finally:
+        _G4._haver, _G4._EMPTY_BACKOFF = _real, _back
+
+
+_calls, _ok = _run_pull([_INCONSISTENT])
+check(_ok and _calls == 2, "a one-off contradictory answer is retried and recovers",
+      "this is the render that failed on 2026-09-15; a second ask is the cheapest thing "
+      "that could have saved it")
+_calls, _ok = _run_pull([_ABSENT] * 3)
+check((not _ok) and _calls == 1, "a code Haver reports ABSENT fails on the first call",
+      "codesnotfound is a real answer — retrying a mistyped ticker would make every typo "
+      "cost three round-trips and teach the operator the lane is slow")
+_calls, _ok = _run_pull([_INCONSISTENT] * 9)
+check((not _ok) and _calls == _G4._EMPTY_RETRIES + 1,
+      "and a persistent one gives up, bounded", "a render must not hang on a dead session")
+_calls, _ok = _run_pull([])
+check(_ok and _calls == 1, "a healthy pull still costs exactly one call",
+      "the retry must be free on the path that already worked")
+
 n_bad = sum(1 for ok, _, _ in _RESULTS if not ok)
 print("\n" + "=" * 78)
 print(f"{len(_RESULTS) - n_bad}/{len(_RESULTS)} checks passed"
