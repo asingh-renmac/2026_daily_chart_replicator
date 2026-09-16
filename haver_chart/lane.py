@@ -816,7 +816,7 @@ def build_row(series: list[dict], *, title: str = "", subtitle: str = "",
               recession_shading: bool = False,
               left_min=None, left_max=None, right_min=None, right_max=None,
               x_tick_years=None, x_label_fmt: str = "", end_series: str = "",
-              x_pad_periods=None) -> dict:
+              x_pad_periods=None, auto_axis: bool = False) -> dict:
     """Assemble the `row` dict `build_chart.render_row` expects (§13.4 schema table).
 
     Pure translation — every key here is one `render_row` already reads. Slots are
@@ -845,6 +845,10 @@ def build_row(series: list[dict], *, title: str = "", subtitle: str = "",
         "recession_shading": bool(recession_shading),
         "left_axis": _axis_block(left_min, left_max),
         "right_axis": _axis_block(right_min, right_max),
+        # Off unless asked for. Replication reproduces a source chart's printed
+        # axis, so the renderer choosing its own would defeat the exercise; the
+        # commentary lane, which reads no source axis, turns it on.
+        "auto_axis": bool(auto_axis),
     }
     if sample_start:
         chart_spec["sample_start"] = sample_start

@@ -178,6 +178,221 @@ def _fit_ylim(read: tuple, extents: list) -> tuple:
             new_hi + (pad if new_hi > rhi else 0.0))
 
 
+# ---------------------------------------------------------------------------
+# Automatic axis fitting  (OPT-IN: RenderSpec.auto_axis, default off)
+#
+# Everything below is inert for the replication lane and must stay that way.
+# Replication reads an axis off a source chart and reproduces it, and the rule
+# there is that the printed range FRAMES the view but never hides a value --
+# see _fit_ylim. The commentary lane has the opposite problem: nobody read an
+# axis off anything, the series are chosen for an argument rather than for
+# being comparable, and a long sample means COVID sets the scale for a chart
+# about last month.
+#
+# Two failures, both of which make a real movement invisible:
+#
+#   one series flattened   a rate swinging five points and a level in the
+#                          hundreds of thousands share an axis, and the rate
+#                          is a straight line.
+#   one episode dominating 2020 in a growth rate. The spike owns the panel and
+#                          the last three years are a thin band.
+#
+# The fix for the first is a second axis; for the second, a shorter range. Both
+# need the numbers, which is why this lives here rather than in the planner:
+# the planner writes its spec before a single observation has been pulled.
+# ---------------------------------------------------------------------------
+
+# A series occupying less than this share of the panel height is flattened.
+AUTO_MIN_OCCUPANCY = 0.25
+# Splitting has to improve the worst-off series by this much to be worth a
+# second axis, which costs the reader a scale to keep track of.
+AUTO_SPLIT_GAIN = 1.5
+# Fence the most extreme few observations. Measured against real series rather
+# than picked: on industrial production year-over-year, which has a spike in
+# both directions, 3/97 leaves the last three years occupying 30% of the panel
+# against 10% unclipped, where a Tukey fence at k=3 managed only 16%. On a
+# trending level like retail sales it tightens by 1.05x and so is refused by
+# the gate below, which is the discrimination we want: episodes get clipped,
+# trends do not.
+AUTO_PCT_LO, AUTO_PCT_HI = 0.03, 0.97
+# And only when it actually buys something, since every truncation costs a line
+# in the subtitle.
+AUTO_CLIP_GAIN = 1.4
+AUTO_MIN_OBS = 12
+# Never fence off the recent past. The chart exists to show the latest move, so
+# a print that is itself the outlier is the one value that must stay on the
+# panel -- exactly the case a percentile rule would otherwise cut.
+AUTO_KEEP_YEARS = 3
+
+
+def _auto_extent(ps: "PlotSeries") -> Optional[tuple]:
+    """(min, max) as the axis will have to accommodate it."""
+    v = ps.series.dropna()
+    if v.empty:
+        return None
+    lo, hi = float(v.min()), float(v.max())
+    if ps.kind == "bar":                       # bars are read against zero
+        lo, hi = min(lo, 0.0), max(hi, 0.0)
+    return (lo, hi)
+
+
+def _occupancy(exts: list, members: list) -> float:
+    """
+    The worst share of the panel any member takes up.
+
+    A flat series is excluded rather than scored zero: it has nothing to reveal,
+    so giving it its own axis would be a second scale bought for no movement.
+    """
+    lo = min(exts[i][0] for i in members)
+    hi = max(exts[i][1] for i in members)
+    span = hi - lo
+    if span <= 0:
+        return 1.0
+    shares = [(exts[i][1] - exts[i][0]) / span for i in members
+              if exts[i][1] > exts[i][0]]
+    return min(shares) if shares else 1.0
+
+
+def _best_split(exts: list) -> Optional[tuple]:
+    """
+    The two-group split that best un-flattens the worst series, or None.
+
+    Groups are contiguous in series order by midpoint, which is what makes this
+    a search over n-1 candidates rather than 2^n. Ordering by midpoint rather
+    than by span is deliberate: it catches series that are the same size but
+    far apart, which a span comparison misses entirely and which squash each
+    other just as badly.
+    """
+    n = len(exts)
+    if n < 2:
+        return None
+    base = _occupancy(exts, list(range(n)))
+    if base >= AUTO_MIN_OCCUPANCY:
+        return None                            # nothing is being squashed
+
+    order = sorted(range(n), key=lambda i: (exts[i][0] + exts[i][1]) / 2.0)
+    best, best_score = None, base
+    for k in range(1, n):
+        a, b = order[:k], order[k:]
+        score = min(_occupancy(exts, a), _occupancy(exts, b))
+        if score > best_score:
+            best, best_score = (a, b), score
+
+    if best is None or best_score < base * AUTO_SPLIT_GAIN:
+        return None
+    # Larger numbers on the left, which is the convention every chart in the
+    # store follows and the one a reader assumes when unlabelled.
+    a, b = best
+    mag = lambda g: max(max(abs(exts[i][0]), abs(exts[i][1])) for i in g)  # noqa: E731
+    return (a, b) if mag(a) >= mag(b) else (b, a)
+
+
+def _clip_limits(exts: list, members: list, plotted: list) -> Optional[tuple]:
+    """
+    Limits with the extremes fenced off, or None when there is nothing extreme.
+
+    Returns None rather than a trivially tighter range, because every
+    truncation costs a line in the subtitle and an unlabelled one would be a
+    lie about the axis.
+    """
+    vals: list = []
+    keep_lo, keep_hi = None, None
+    for s in plotted:
+        v = s.dropna()
+        if v.empty:
+            continue
+        vals.extend(float(x) for x in v.tolist())
+        try:
+            recent = v[v.index >= v.index.max() - pd.DateOffset(years=AUTO_KEEP_YEARS)]
+        except (TypeError, AttributeError):    # non-datetime index: keep the tail
+            recent = v.tail(AUTO_MIN_OBS)
+        if not recent.empty:
+            r_lo, r_hi = float(recent.min()), float(recent.max())
+            keep_lo = r_lo if keep_lo is None else min(keep_lo, r_lo)
+            keep_hi = r_hi if keep_hi is None else max(keep_hi, r_hi)
+
+    if len(vals) < AUTO_MIN_OBS:
+        return None
+    v_sorted = sorted(vals)
+
+    def pct(p: float) -> float:
+        k = (len(v_sorted) - 1) * p
+        f = math.floor(k)
+        c = min(f + 1, len(v_sorted) - 1)
+        return v_sorted[f] + (v_sorted[c] - v_sorted[f]) * (k - f)
+
+    lo = min(exts[i][0] for i in members)
+    hi = max(exts[i][1] for i in members)
+    new_lo = max(lo, pct(AUTO_PCT_LO))
+    new_hi = min(hi, pct(AUTO_PCT_HI))
+    if keep_lo is not None:
+        new_lo, new_hi = min(new_lo, keep_lo), max(new_hi, keep_hi)
+    if new_hi <= new_lo:
+        return None
+    # Gated after the recent-past rescue, so a chart whose newest print is the
+    # outlier keeps the full range and says nothing about truncation, rather
+    # than claiming a truncation that was then undone.
+    if (hi - lo) < AUTO_CLIP_GAIN * (new_hi - new_lo):
+        return None
+
+    pad = 0.06 * (new_hi - new_lo)
+    return (new_lo - pad, new_hi + pad)
+
+
+def _plan_axes(series: list, spec: "RenderSpec") -> dict:
+    """
+    Decide axis sides and y ranges from the data, for the commentary lane.
+
+    Returns {} when there is nothing to do, so the caller keeps its existing
+    behaviour exactly. Never overrides a decision already made: an explicit
+    axis_mode="dual" or an explicit y_left is a human's read and is left alone.
+    """
+    if any(ps.kind == "stacked_bar" for ps in series):
+        return {}                              # a stack has to share one axis
+    exts = [_auto_extent(ps) for ps in series]
+    if any(e is None for e in exts):
+        return {}
+
+    plan: dict = {}
+    dual = spec.axis_mode == "dual"
+    if not dual:
+        split = _best_split(exts)
+        if split:
+            left, right = split
+            plan["axis_mode"] = "dual"
+            plan["assign"] = ({i: "L" for i in left} | {i: "R" for i in right})
+            dual = True
+
+    sides = plan.get("assign") or {i: (ps.axis if dual else "L")
+                                   for i, ps in enumerate(series)}
+    has_bar = any(ps.kind == "bar" for ps in series)
+    truncated = []
+    for side, key, given in (("L", "y_left", spec.y_left),
+                             ("R", "y_right", spec.y_right)):
+        if given is not None:
+            continue                           # a read-off range wins outright
+        members = [i for i in range(len(series)) if sides.get(i, "L") == side]
+        if not members:
+            continue
+        lim = _clip_limits(exts, members, [series[i].series for i in members])
+        if lim and has_bar:
+            lim = (min(lim[0], 0.0), max(lim[1], 0.0))
+        if lim:
+            plan[key] = lim
+            truncated.append(side)
+        if not dual:
+            break                              # one axis, one pass
+
+    if truncated:
+        if not dual:
+            plan["note"] = "y-axis truncated"
+        elif len(truncated) == 2:
+            plan["note"] = "both y-axes truncated"
+        else:
+            plan["note"] = f"{'left' if truncated[0] == 'L' else 'right'} y-axis truncated"
+    return plan
+
+
 def _assert_clean(text: str, where: str) -> None:
     if text and _DIRTY_LABEL.search(text):
         raise ValueError(
@@ -287,6 +502,10 @@ class RenderSpec:
     y_right: Optional[tuple] = None
     x_tick_years: Optional[int] = None   # force major ticks every N years
     x_label_fmt: Optional[str] = None    # 'auto'|'year'|'month'|'quarter'
+    # Let the renderer choose axis sides and y ranges from the data. Off by
+    # default, and it has to stay that way: replication reproduces a source
+    # chart's printed axis and must never second-guess it. See _plan_axes.
+    auto_axis: bool = False
 
 
 def render(series: list[PlotSeries], spec: RenderSpec,
@@ -296,6 +515,24 @@ def render(series: list[PlotSeries], spec: RenderSpec,
     _assert_clean(spec.subtitle or "", "subtitle")
     for ps in series:
         _assert_clean(ps.label, "legend label")
+
+    # Before the figure exists, because it can turn a single-axis chart into a
+    # twinned one. Inert unless the caller opted in.
+    plan = _plan_axes(series, spec) if spec.auto_axis else {}
+    if plan.get("axis_mode"):
+        spec.axis_mode = plan["axis_mode"]
+    for i, side in (plan.get("assign") or {}).items():
+        series[i].axis = side
+    clipped = set()
+    for key, attr in (("y_left", "y_left"), ("y_right", "y_right")):
+        if plan.get(key) is not None:
+            setattr(spec, attr, plan[key])
+            clipped.add(attr)
+    if plan.get("note"):
+        # Appended here rather than left to the caller: the note describes what
+        # this function decided, and a truncated axis with nothing saying so is
+        # the one outcome worse than not truncating at all.
+        spec.subtitle = f"{spec.subtitle}, {plan['note']}" if spec.subtitle else plan["note"]
 
     fig, axL = plt.subplots(figsize=spec.figsize)
     axR = axL.twinx() if spec.axis_mode == "dual" else axL
@@ -368,10 +605,15 @@ def render(series: list[PlotSeries], spec: RenderSpec,
         axL.set_xlim(spec.x_range[0], spec.x_range[1])
     # Mmm-YY on month spans, years on long ones — unless the chart overrides tick/format.
     _style_time_axis(axL, tick_years=spec.x_tick_years, label_fmt=spec.x_label_fmt)
+    # _fit_ylim exists to stop a read-off range hiding data, so a range this
+    # function chose ON PURPOSE to hide an outlier has to bypass it. That is the
+    # whole point of the truncation, and the subtitle now says it is happening.
     if spec.y_left is not None:
-        axL.set_ylim(*_fit_ylim(spec.y_left, l_ext))
+        axL.set_ylim(*(spec.y_left if "y_left" in clipped
+                       else _fit_ylim(spec.y_left, l_ext)))
     if spec.axis_mode == "dual" and spec.y_right is not None:
-        axR.set_ylim(*_fit_ylim(spec.y_right, r_ext))
+        axR.set_ylim(*(spec.y_right if "y_right" in clipped
+                       else _fit_ylim(spec.y_right, r_ext)))
 
     renmac_style(axL, title=spec.title, subtitle=spec.subtitle, source=spec.source)
     if not spec.title:
