@@ -54,7 +54,33 @@ def main() -> int:
     ap.add_argument("--reviewer", default="")
     args = ap.parse_args()
 
-    rows = list(csv.DictReader((ROOT / args.sheet).open(encoding="utf-8-sig")))
+    reader = csv.DictReader((ROOT / args.sheet).open(encoding="utf-8-sig"))
+    rows = list(reader)
+
+    # Header check, loud, BEFORE anything reads a field. Every lookup below is by column
+    # NAME, so a renamed or deleted header does not raise -- it returns None, every row
+    # then looks like a blank spacer, and this writes a well-formed eval set containing
+    # nothing, with exit code 0. A day of labelling would appear to have evaporated, and
+    # the output would look like a clean run. Measured: renaming `group` to `block_id`
+    # printed "groups in sheet: 0" and exited successfully.
+    needed = {"group", "alias", "row_type", "pick", "ticker"}
+    found = set(reader.fieldnames or [])
+    if not needed <= found:
+        print(f"ERROR: {args.sheet} is missing required column(s): "
+              f"{', '.join(sorted(needed - found))}")
+        print(f"       columns found: {', '.join(reader.fieldnames or ['<none>'])}")
+        print("       The header row names the columns this script reads. Rename the")
+        print("       VALUES in a column freely, but leave row 1 alone.")
+        return 2
+
+    # Headers fine and still nothing to group on: the sheet is empty, or every row's
+    # column A was cleared. Blank column A means 'spacer', so clearing it on a real row
+    # silently deletes that row from the eval set -- worth saying rather than reporting 0.
+    if rows and not any((r.get("group") or "").strip() for r in rows):
+        print(f"ERROR: {args.sheet} has {len(rows)} rows but column `group` is blank on "
+              "every one.")
+        print("       A blank `group` marks a spacer row, so nothing here can be read.")
+        return 2
     # Keyed on (group, alias), not group. entry_id names the SERIES and several aliases share
     # one -- "labor force" and "LF" are both US0142 -- so grouping on it alone silently drops
     # every alias but the first. Every row carries its own alias, so the pair is exact.
