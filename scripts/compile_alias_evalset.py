@@ -119,12 +119,22 @@ def main() -> int:
             skipped.append(alias)
             continue
 
+        # Kept in the sheet, out of the metric. Two blocks carry a judgement that is
+        # correct and unscorable: ycomp/ycompr share a byte-identical descriptor so no
+        # retriever can be asked to choose between them, and the Chicago barometer is
+        # unambiguous but simply not licensed here. Scoring either as a failure would
+        # blame retrieval for the catalogue; deleting them would shrink the denominator
+        # without saying so.
+        excluded = any((r.get("exclude") or "").strip().lower().startswith("y")
+                       for r in grp)
+
         if any(r["row_type"].startswith("PARK") for r in picked):
             parks += 1
             out.append({"query": alias, "expected_outcome": "park",
                         "expected_ticker": None, "acceptable_tickers": [],
                         "frequency": "", "adjustment": "",
                         "note": (picked[0].get("note") or "").strip(),
+                        "exclude_from_scoring": excluded,
                         "source": f"worksheet:{gid}"})
             continue
 
@@ -137,6 +147,14 @@ def main() -> int:
                 first = r
             if t not in tickers:
                 tickers.append(t)
+            # Mirrors the adjudicator supplied that retrieval never offered as rows --
+            # ipmfg@usecon beside ipmfg@ip, pcums/icums@usecon beside ums@cpidata. They
+            # cannot be ticked because they are not rows, and omitting them would score a
+            # resolver WRONG for returning the usecon mirror of the series we accepted.
+            for extra in (r.get("also_acceptable") or "").split(";"):
+                e = norm_ticker(extra)
+                if e and e not in tickers:
+                    tickers.append(e)
         if not tickers:
             skipped.append(alias)             # ticked a NONE row but typed no ticker
             continue
@@ -146,6 +164,12 @@ def main() -> int:
                     "frequency": (first.get("frequency") or "").strip(),
                     "adjustment": (first.get("adjustment") or "").strip(),
                     "note": (first.get("note") or "").strip(),
+                    "exclude_from_scoring": excluded,
+                    # Whether RETRIEVAL found it, which is the finding this set exists to
+                    # measure: a tick means the answer was already in the candidate pool,
+                    # a typed NONE row means it was not there at all. Recorded per entry
+                    # so recall and ranking can never be conflated when scoring.
+                    "retrieval_found": not first["row_type"].startswith("NONE"),
                     "source": f"worksheet:{gid}"})
 
     payload = {"built": date.today().isoformat(), "reviewer": args.reviewer,
@@ -162,6 +186,14 @@ def main() -> int:
         print("   e.g. " + ", ".join(skipped[:6]))
     n_mirror = sum(1 for e in out if len(e['acceptable_tickers']) > 1)
     print(f"entries with mirrors : {n_mirror}")
+    binds = [e for e in out if e["expected_outcome"] == "bind"]
+    if binds:
+        found = sum(1 for e in binds if e.get("retrieval_found"))
+        print(f"of {len(binds)} bindable aliases, retrieval had the answer in its pool "
+              f"for {found} ({found / len(binds):.0%})")
+    n_excl = sum(1 for e in out if e.get("exclude_from_scoring"))
+    if n_excl:
+        print(f"excluded from scoring: {n_excl}")
     print(f"written              : {dest}")
     return 0
 
