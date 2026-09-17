@@ -35,27 +35,42 @@ So the two projects are already joined, and the thing being proposed here is not
 feature — it is an *interactive* entry point to a feature that currently only runs inside
 a scheduled job.
 
-## What is actually missing
+## What is actually missing — narrower than it first appears
 
-`econ_commentary`'s planner is **release-scoped and batch**. `shortlist()` needs a
-`release_id` to look up folders in `config/chart_store_map.json`, and the whole chain runs
-headless after a scrape. There is no way to hand it arbitrary text.
+**Corrected 2026-09-17.** The interactive path is not missing at all. The
+`renmac-charts-build` skill already does commentary → rendered charts through this lane:
+*"reading a commentary and proposing 2-3 chart specs and then binding and rendering
+them"*, in two phases — specs first, then `resolve_series` for every series, `pick_series`
+for every park, `render_chart` for each approved chart. It is in production use and its
+rules are more careful than anything proposed below (never bind the top hit yourself,
+never write a ticker from memory, print every `chart_url`).
 
-One structural difference makes the interactive version much smaller than the batch one:
-**`econ_commentary` needs a second Claude call because it is headless. In the chat lane
-the model is already in the loop.** The lane therefore needs no planner, no budget
-heuristic, no spec validator and no prompt template. It needs to hand Claude the relevant
-prior charts and get out of the way. Everything downstream — resolution, the seeded
-series book, rendering, parking — already works.
+So the feature exists **twice**: batch and release-scoped in `econ_commentary`, and
+interactive and release-free in the skill.
+
+What neither the skill nor the lane has is **prior art**. The skill designs every chart
+from the commentary alone, because it cannot see the 1,022 catalogued charts — those are
+reachable only through `econ_commentary`'s `chart_store`. That is the entire gap, and it
+is a single missing input, not a missing capability.
+
+One structural difference is worth keeping in view: **`econ_commentary` needs a second
+Claude call because it is headless. In the chat lane the model is already in the loop.**
+The lane therefore needs no planner, no budget heuristic, no spec validator and no prompt
+template — the skill supplies all of that. It needs to hand Claude the relevant prior
+charts and get out of the way.
 
 ## Two constraints, both measured
 
-**The AVD cannot see the chart store.** Measured 2026-09-17: none of
-`C:\Users\asingh\new_work\mb_charts_store\US`, `C:\Users\madz\Work\asingh\mb_charts_store\US`
-or the UNC path resolve on the host, and `MB_CHART_STORE` is unset at both machine and
-user scope. The lane runs there, so today a store-reading tool would have nothing to read.
-This is the single biggest feasibility question and it has a cheap answer: the index is
-**1.6 MB of text** and the PNGs are **77 MB**. Ranking needs only the index.
+**The AVD could not see the chart store — now resolved.** Measured 2026-09-17: no path
+resolved on the host and `MB_CHART_STORE` was unset at both scopes. The store has since
+been copied to `C:\Users\madz\Work\asingh\mb_charts_store` (1,044 PNGs, 51 JSON files,
+1,022 charts in the index, `generated` 2026-09-09) and `MB_CHART_STORE` set at machine
+scope to its parent, which `store_root()` resolves through its `US` fallback. Because the
+PNGs are there too, the vision pass is no longer gated on a separate decision.
+
+One consequence to plan for: the AVD copy is a **snapshot**. Nothing syncs it. If the
+store is re-exported, the lane ranks against stale descriptions with no signal that it is
+doing so, which is why any tool must surface the index's own `generated` date.
 
 **The release scope turns out not to be load-bearing.** The worry was that ranking across
 all 1,022 charts instead of a release's ~150 would be too noisy to use. Measured on a
@@ -113,6 +128,23 @@ Note what is **not** proposed: no `plan_charts`, no budget heuristic, no spec va
 chart-spec schema. In the chat lane Claude reads the candidates and calls the existing
 `resolve_series` and `render_chart` itself. Adding a planner here would be a second,
 drifting copy of `chart_planner.py` with no second model to justify it.
+
+### This must not become a prior-charts-only lane
+
+The point most at risk of being lost. Both existing implementations design **fresh**
+charts as the normal case, and the new tool must not narrow that:
+
+* `econ_commentary`'s prompt makes it the strongest instruction in the file — *"If none of
+  them speak to what today's piece argues, ignore every one and design from the commentary
+  alone — that is a correct and expected outcome, not a failure to find something."*
+  `store_reference: null` is documented as "a perfectly good answer", and a series outside
+  the 229-entry book is requested by `base_descriptor`, matched against the whole Haver
+  catalogue through `lane.resolve_one`.
+* `renmac-charts-build` designs from the commentary with no store at all.
+
+So `find_prior_charts` is an **optional input**, never a menu. A commentary whose argument
+no stored chart makes is the ordinary case, and the tool returning nothing useful must
+read as normal rather than as a failure — including when it returns `[]`.
 
 ## Data flow
 
