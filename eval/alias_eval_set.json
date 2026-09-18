@@ -1,0 +1,374 @@
+{
+  "built": "2026-09-18",
+  "reviewer": "aman",
+  "sheet": "eval/alias_worksheet.csv",
+  "n": 26,
+  "n_park": 0,
+  "n_unreviewed_skipped": 1,
+  "pairs": [
+    {
+      "query": "4WMA claims",
+      "expected_outcome": "bind",
+      "expected_ticker": "licmv@weekly",
+      "acceptable_tickers": [
+        "licmv@weekly"
+      ],
+      "frequency": "",
+      "adjustment": "",
+      "note": "",
+      "exclude_from_scoring": false,
+      "retrieval_found": false,
+      "source": "worksheet:US0190"
+    },
+    {
+      "query": "Challenger hiring plans",
+      "expected_outcome": "bind",
+      "expected_ticker": "cgchto@surveys",
+      "acceptable_tickers": [
+        "cgchto@surveys"
+      ],
+      "frequency": "",
+      "adjustment": "",
+      "note": "",
+      "exclude_from_scoring": false,
+      "retrieval_found": false,
+      "source": "worksheet:US0192"
+    },
+    {
+      "query": "Employed to Employed",
+      "expected_outcome": "bind",
+      "expected_ticker": "lere@usecon",
+      "acceptable_tickers": [
+        "lere@usecon"
+      ],
+      "frequency": "",
+      "adjustment": "",
+      "note": "",
+      "exclude_from_scoring": false,
+      "retrieval_found": false,
+      "source": "worksheet:US0200"
+    },
+    {
+      "query": "epop",
+      "expected_outcome": "bind",
+      "expected_ticker": "lq@usecon",
+      "acceptable_tickers": [
+        "lq@usecon"
+      ],
+      "frequency": "",
+      "adjustment": "",
+      "note": "",
+      "exclude_from_scoring": false,
+      "retrieval_found": false,
+      "source": "worksheet:US0144"
+    },
+    {
+      "query": "Population",
+      "expected_outcome": "bind",
+      "expected_ticker": "lnn@usecon",
+      "acceptable_tickers": [
+        "lnn@usecon"
+      ],
+      "frequency": "",
+      "adjustment": "",
+      "note": "",
+      "exclude_from_scoring": false,
+      "retrieval_found": false,
+      "source": "worksheet:US0139"
+    },
+    {
+      "query": "Labor Force",
+      "expected_outcome": "bind",
+      "expected_ticker": "lf@usecon",
+      "acceptable_tickers": [
+        "lf@usecon"
+      ],
+      "frequency": "",
+      "adjustment": "",
+      "note": "",
+      "exclude_from_scoring": false,
+      "retrieval_found": false,
+      "source": "worksheet:US0142"
+    },
+    {
+      "query": "U-6",
+      "expected_outcome": "bind",
+      "expected_ticker": "ra6@empl",
+      "acceptable_tickers": [
+        "ra6@empl"
+      ],
+      "frequency": "M",
+      "adjustment": "sa",
+      "note": "",
+      "exclude_from_scoring": false,
+      "retrieval_found": true,
+      "source": "worksheet:US0156"
+    },
+    {
+      "query": "U-to-E",
+      "expected_outcome": "bind",
+      "expected_ticker": "bs16@empl",
+      "acceptable_tickers": [
+        "bs16@empl"
+      ],
+      "frequency": "",
+      "adjustment": "",
+      "note": "",
+      "exclude_from_scoring": false,
+      "retrieval_found": false,
+      "source": "worksheet:US0203"
+    },
+    {
+      "query": "U-to-N",
+      "expected_outcome": "bind",
+      "expected_ticker": "js16@empl",
+      "acceptable_tickers": [
+        "js16@empl"
+      ],
+      "frequency": "M",
+      "adjustment": "sa",
+      "note": "",
+      "exclude_from_scoring": false,
+      "retrieval_found": true,
+      "source": "worksheet:US0198"
+    },
+    {
+      "query": "U4",
+      "expected_outcome": "bind",
+      "expected_ticker": "ra4@empl",
+      "acceptable_tickers": [
+        "ra4@empl"
+      ],
+      "frequency": "",
+      "adjustment": "",
+      "note": "",
+      "exclude_from_scoring": false,
+      "retrieval_found": false,
+      "source": "worksheet:US0154"
+    },
+    {
+      "query": "UR",
+      "expected_outcome": "bind",
+      "expected_ticker": "lr@usecon",
+      "acceptable_tickers": [
+        "lr@usecon"
+      ],
+      "frequency": "",
+      "adjustment": "",
+      "note": "",
+      "exclude_from_scoring": false,
+      "retrieval_found": false,
+      "source": "worksheet:US0140"
+    },
+    {
+      "query": "average jobless spell",
+      "expected_outcome": "bind",
+      "expected_ticker": "kuad@usecon",
+      "acceptable_tickers": [
+        "kuad@usecon"
+      ],
+      "frequency": "M",
+      "adjustment": "sa",
+      "note": "",
+      "exclude_from_scoring": false,
+      "retrieval_found": true,
+      "source": "worksheet:US0171"
+    },
+    {
+      "query": "employment to nonparticipation",
+      "expected_outcome": "bind",
+      "expected_ticker": "is16@empl",
+      "acceptable_tickers": [
+        "is16@empl"
+      ],
+      "frequency": "",
+      "adjustment": "",
+      "note": "",
+      "exclude_from_scoring": false,
+      "retrieval_found": false,
+      "source": "worksheet:US0196"
+    },
+    {
+      "query": "Total hires rate",
+      "expected_outcome": "bind",
+      "expected_ticker": "ljhtpa@usecon",
+      "acceptable_tickers": [
+        "ljhtpa@usecon"
+      ],
+      "frequency": "",
+      "adjustment": "",
+      "note": "",
+      "exclude_from_scoring": false,
+      "retrieval_found": false,
+      "source": "worksheet:US0178"
+    },
+    {
+      "query": "Total layoffs and discharges",
+      "expected_outcome": "bind",
+      "expected_ticker": "ljltla@usecon",
+      "acceptable_tickers": [
+        "ljltla@usecon"
+      ],
+      "frequency": "",
+      "adjustment": "",
+      "note": "",
+      "exclude_from_scoring": false,
+      "retrieval_found": false,
+      "source": "worksheet:US0181"
+    },
+    {
+      "query": "marginally attached",
+      "expected_outcome": "bind",
+      "expected_ticker": "lhwsa@usecon",
+      "acceptable_tickers": [
+        "lhwsa@usecon"
+      ],
+      "frequency": "",
+      "adjustment": "",
+      "note": "",
+      "exclude_from_scoring": false,
+      "retrieval_found": false,
+      "source": "worksheet:US0150"
+    },
+    {
+      "query": "NILF",
+      "expected_outcome": "bind",
+      "expected_ticker": "lh@usecon",
+      "acceptable_tickers": [
+        "lh@usecon"
+      ],
+      "frequency": "",
+      "adjustment": "",
+      "note": "",
+      "exclude_from_scoring": false,
+      "retrieval_found": false,
+      "source": "worksheet:US0148"
+    },
+    {
+      "query": "lfpr",
+      "expected_outcome": "bind",
+      "expected_ticker": "fa16@empl",
+      "acceptable_tickers": [
+        "fa16@empl"
+      ],
+      "frequency": "",
+      "adjustment": "",
+      "note": "",
+      "exclude_from_scoring": false,
+      "retrieval_found": false,
+      "source": "worksheet:US0143"
+    },
+    {
+      "query": "total quits rate",
+      "expected_outcome": "bind",
+      "expected_ticker": "ljqtpa@usecon",
+      "acceptable_tickers": [
+        "ljqtpa@usecon"
+      ],
+      "frequency": "",
+      "adjustment": "",
+      "note": "",
+      "exclude_from_scoring": false,
+      "retrieval_found": false,
+      "source": "worksheet:US0180"
+    },
+    {
+      "query": "durable goods orders",
+      "expected_outcome": "bind",
+      "expected_ticker": "nmodg@usecon",
+      "acceptable_tickers": [
+        "nmodg@usecon"
+      ],
+      "frequency": "",
+      "adjustment": "",
+      "note": "",
+      "exclude_from_scoring": false,
+      "retrieval_found": false,
+      "source": "worksheet:US0501"
+    },
+    {
+      "query": "capital goods orders",
+      "expected_outcome": "bind",
+      "expected_ticker": "nmocg@usecon",
+      "acceptable_tickers": [
+        "nmocg@usecon"
+      ],
+      "frequency": "M",
+      "adjustment": "sa",
+      "note": "",
+      "exclude_from_scoring": false,
+      "retrieval_found": true,
+      "source": "worksheet:US0509"
+    },
+    {
+      "query": "core durable goods orders",
+      "expected_outcome": "bind",
+      "expected_ticker": "nmocnx@usecon",
+      "acceptable_tickers": [
+        "nmocnx@usecon"
+      ],
+      "frequency": "",
+      "adjustment": "",
+      "note": "",
+      "exclude_from_scoring": false,
+      "retrieval_found": false,
+      "source": "worksheet:US0508"
+    },
+    {
+      "query": "durable orders",
+      "expected_outcome": "bind",
+      "expected_ticker": "nmodg@usecon",
+      "acceptable_tickers": [
+        "nmodg@usecon"
+      ],
+      "frequency": "M",
+      "adjustment": "sa",
+      "note": "",
+      "exclude_from_scoring": false,
+      "retrieval_found": true,
+      "source": "worksheet:US0501"
+    },
+    {
+      "query": "durable-goods orders",
+      "expected_outcome": "bind",
+      "expected_ticker": "nmodg@usecon",
+      "acceptable_tickers": [
+        "nmodg@usecon"
+      ],
+      "frequency": "M",
+      "adjustment": "sa",
+      "note": "",
+      "exclude_from_scoring": false,
+      "retrieval_found": true,
+      "source": "worksheet:US0501"
+    },
+    {
+      "query": "durable goods excl-transport orders",
+      "expected_outcome": "bind",
+      "expected_ticker": "nmudgxt@usecon",
+      "acceptable_tickers": [
+        "nmudgxt@usecon"
+      ],
+      "frequency": "M",
+      "adjustment": "sa",
+      "note": "",
+      "exclude_from_scoring": false,
+      "retrieval_found": true,
+      "source": "worksheet:US0502"
+    },
+    {
+      "query": "manufacturing shipments",
+      "expected_outcome": "bind",
+      "expected_ticker": "nms@usecon",
+      "acceptable_tickers": [
+        "nms@usecon"
+      ],
+      "frequency": "",
+      "adjustment": "",
+      "note": "",
+      "exclude_from_scoring": false,
+      "retrieval_found": false,
+      "source": "worksheet:US0518"
+    }
+  ]
+}
