@@ -116,11 +116,24 @@ try:
     r = lane.resolve_one(base_descriptor="Philly Fed Mfg Business Outlook: Current "
                                          "Activity Diffusion Index",
                          applied_transform="Z-Score", sa_hint="sa")
-    check(r["status"] == "resolved" and r["resolved"] == "bocgx@surveys",
+    # Case-INSENSITIVE since 2026-09-17. The answer used to come from the catalogue, which
+    # returns lower case; it now comes from the ratified store, which was seeded from the
+    # DLX-vetted series book and preserves that book's upper case. Both are the same
+    # series and Haver treats the two spellings alike, so pinning the case would be
+    # pinning which ROUTE answered, which is not what this check is for.
+    check(r["status"] == "resolved"
+          and (r["resolved"] or "").lower() == "bocgx@surveys",
           "resolve_series binds the Philly Fed diffusion index",
-          f"{r['status']} -> {r['resolved']} (exact={r['exact_token_match']})")
-    check(bool(r["candidates"]), "candidates returned with scores",
-          f"{len(r['candidates'])} candidate(s)")
+          f"{r['status']} -> {r['resolved']} via {r.get('via')} "
+          f"(exact={r['exact_token_match']})")
+    # A store hit legitimately has no candidates: the search never ran, because a human
+    # already decided this one. Requiring them unconditionally would fail every descriptor
+    # the seeding was meant to speed up -- and would quietly push the fix toward disabling
+    # the store. So the invariant is: candidates whenever SEARCH answered.
+    _via = r.get("via") or ""
+    check(bool(r["candidates"]) or _via == "(learned)",
+          "search returns scored candidates; a learned bind needs none",
+          f"{len(r['candidates'])} candidate(s) via {_via or '(search)'}")
 except Exception as exc:
     check(False, "resolve_series live call", f"{type(exc).__name__}: {exc}")
     r = None
@@ -1291,6 +1304,68 @@ check((not _ok) and _calls == _G4._EMPTY_RETRIES + 1,
 _calls, _ok = _run_pull([])
 check(_ok and _calls == 1, "a healthy pull still costs exactly one call",
       "the retry must be free on the path that already worked")
+
+print("\n19. Every HTTP request leaves a line naming its session")
+# 2026-09-18: an operator's call returned "Session not found" at 07:49 on a lane that had
+# been up since 06:45 and had served that same operator four minutes earlier. The server
+# side held NOTHING -- no 4xx, no session line, no trace at all -- because FastMCP does not
+# log a rejected session. The failure an operator meets most often was the one that left no
+# evidence, and Claude reports it as "Unable to reach haver-chart", which points the reader
+# at a lane that is healthy.
+import asyncio as _asyncio                                              # noqa: E402
+import io as _io                                                        # noqa: E402
+from contextlib import redirect_stderr as _redirect_stderr              # noqa: E402
+
+
+def _drive(_app, _scope):
+    _sent = []
+
+    async def _send(m):
+        _sent.append(m)
+
+    async def _recv():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    _buf = _io.StringIO()
+    with _redirect_stderr(_buf):
+        _asyncio.new_event_loop().run_until_complete(
+            server.SessionTrace(_app)(_scope, _recv, _send))
+    return _buf.getvalue().strip(), _sent
+
+
+def _scope(method="POST", path="/mcp", sid=None):
+    _h = [(b"content-type", b"application/json")]
+    if sid:
+        _h.append((b"mcp-session-id", sid.encode()))
+    return {"type": "http", "method": method, "path": path, "headers": _h}
+
+
+async def _ok(scope, receive, send):
+    await send({"type": "http.response.start", "status": 404, "headers": []})
+    await send({"type": "http.response.body", "body": b"Session not found"})
+
+
+async def _stream(scope, receive, send):
+    await send({"type": "http.response.start", "status": 200, "headers": []})
+    for _i in range(3):
+        await send({"type": "http.response.body", "body": f"e{_i}".encode(),
+                    "more_body": _i < 2})
+
+
+_log, _ = _drive(_ok, _scope(sid="abcdef1234567890"))
+check("session=abcdef12" in _log and "-> 404" in _log,
+      "a rejected session is recorded, with its id and status",
+      "this is the line whose absence made 2026-09-18 undiagnosable")
+check("abcdef1234567890" not in _log,
+      "but only a PREFIX of the id reaches the log",
+      "a session id is a live credential and this log is archived for 14 days")
+_log, _ = _drive(_ok, _scope())
+check("session=-" in _log, "a request carrying no session id logs '-' rather than failing")
+_log, _sent = _drive(_stream, _scope(method="GET", sid="stream01"))
+check([m["body"] for m in _sent if m["type"] == "http.response.body"]
+      == [b"e0", b"e1", b"e2"],
+      "SSE chunks pass through unbuffered and in order",
+      "the reason this is pure ASGI: BaseHTTPMiddleware buffers, which breaks streaming")
 
 n_bad = sum(1 for ok, _, _ in _RESULTS if not ok)
 print("\n" + "=" * 78)

@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time as _time
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -1238,6 +1239,59 @@ if HTTP_ENABLED:
             structured_content=out)
 
 
+class SessionTrace:
+    """One stderr line per HTTP request, carrying the MCP session id.
+
+    Added 2026-09-18, after an operator's call came back "Session not found" (JSON-RPC
+    -32600) at 07:49 on a lane that had been up continuously since 06:45 and was serving
+    that same operator four minutes earlier. The investigation found NOTHING on the server
+    side: no 4xx, no session line, no trace of any kind. FastMCP does not log a rejected
+    session, so the one failure an operator actually meets regularly was also the one
+    failure that left no evidence — and Claude renders it as "Unable to reach haver-chart",
+    which sends the reader to look at a lane that is perfectly healthy.
+
+    This cannot prevent the rejection. What it does is make the question answerable next
+    time: which session id asked, on what path, and what came back. Session ids are logged
+    as a short PREFIX — enough to tell two clients apart and to match a call against the
+    id issued at connect, without writing a live credential into a log file that is
+    archived for fourteen days.
+
+    Pure ASGI rather than BaseHTTPMiddleware, because this endpoint streams: Starlette's
+    class-based middleware buffers the response, which would break SSE outright.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http":
+            return await self.app(scope, receive, send)
+
+        started = _time.perf_counter()
+        status = {"code": 0}
+
+        async def _send(message):
+            if message.get("type") == "http.response.start":
+                status["code"] = message.get("status", 0)
+            await send(message)
+
+        try:
+            await self.app(scope, receive, _send)
+        finally:
+            # In `finally`, so a request that raises is still recorded. An exception here
+            # would be worse than the blindness it fixes, hence the bare except.
+            try:
+                hdrs = {k.decode("latin-1").lower(): v.decode("latin-1")
+                        for k, v in (scope.get("headers") or [])}
+                sid = hdrs.get("mcp-session-id") or ""
+                ms = (_time.perf_counter() - started) * 1000
+                print(f"[http] {scope.get('method', '?')} {scope.get('path', '?')} "
+                      f"-> {status['code']} session={sid[:8] or '-'} {ms:.0f}ms",
+                      file=sys.stderr, flush=True)
+            except Exception:
+                pass
+
+
 if __name__ == "__main__":
     if HTTP_ENABLED:
         # Loopback ONLY. cloudflared is the public edge (§14.6); uvicorn must never be
@@ -1247,6 +1301,8 @@ if __name__ == "__main__":
         print(f"[haver-chart] Streamable HTTP on 127.0.0.1:{port} "
               f"(auth: Entra, public base {os.environ['HAVER_CHART_PUBLIC_URL']})",
               file=sys.stderr)
-        mcp.run(transport="http", host="127.0.0.1", port=port)
+        from starlette.middleware import Middleware       # noqa: E402  (HTTP mode only)
+        mcp.run(transport="http", host="127.0.0.1", port=port,
+                middleware=[Middleware(SessionTrace)])
     else:
         mcp.run()
