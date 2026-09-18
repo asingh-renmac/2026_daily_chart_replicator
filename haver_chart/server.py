@@ -1239,6 +1239,48 @@ if HTTP_ENABLED:
             structured_content=out)
 
 
+# ─────────────────────── house convention (2026-09-18) ───────────────────────
+# Registered only when enabled, rather than registered-but-inert, because "disabled" has to
+# mean the model is genuinely unaided: a tool it can see is a tool it may reach for, and the
+# whole point of the switch is to be able to compare charts designed WITH this against
+# charts designed without it.
+_CONVENTIONS_ON = os.environ.get("HAVER_CHART_CONVENTIONS", "on").lower() in {
+    "1", "true", "on", "yes"}
+
+if _CONVENTIONS_ON:
+    from haver_chart import conventions as _CONV            # noqa: E402
+
+    @mcp.tool
+    def house_convention(planned_chart: str) -> ToolResult:
+        """How this desk has DRAWN things like this before. Call it AFTER you have decided.
+
+        Describe the chart you have already designed — what it plots and what it argues —
+        and this reports how the desk has presented similar things: which transformations,
+        which frequency, which sample lengths, counted over prior published charts.
+
+        It answers HOW, never WHAT. It returns no chart to copy and no way to name one,
+        because the order matters: asked before you have decided, a list of prior work is a
+        menu and it would quietly replace your own reading of the commentary. Asked after,
+        it can only adjust a transformation or a start date on a chart that is already
+        yours.
+
+        Silence is a real and common answer. A novel pairing has no convention, and "the
+        desk has not shown this" means design it as you see fit — not that you have failed
+        to find something. Counts come from a catalogue snapshot whose date is returned;
+        treat an old one accordingly.
+        """
+        out = _CONV.lookup(planned_chart)
+        if not out["matched"]:
+            text = out["note"]
+        else:
+            tf = ", ".join(f"{t['value']} ({t['charts']})" for t in out["transformations"][:4])
+            fq = ", ".join(f"{t['value']} ({t['charts']})" for t in out["frequency"][:3])
+            text = (f"{out['matched']} prior chart(s). transformations: {tf or '-'}; "
+                    f"frequency: {fq or '-'}. Catalogue of {out['index_generated'][:10]}.")
+        return ToolResult(content=[TextContent(type="text", text=text)],
+                          structured_content=out)
+
+
 class SessionTrace:
     """One stderr line per HTTP request, carrying the MCP session id.
 

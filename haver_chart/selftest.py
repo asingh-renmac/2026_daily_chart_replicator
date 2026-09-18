@@ -1367,6 +1367,47 @@ check([m["body"] for m in _sent if m["type"] == "http.response.body"]
       "SSE chunks pass through unbuffered and in order",
       "the reason this is pure ASGI: BaseHTTPMiddleware buffers, which breaks streaming")
 
+print("\n20. House convention answers HOW, never WHAT")
+from haver_chart import conventions as _CONV                            # noqa: E402
+
+_cat = _CONV.load()
+if not _cat["charts"]:
+    check(True, "no chart catalogue reachable here — convention checks skipped",
+          "the share is authenticated and a dev box may not see it; the tool is built to "
+          "return silence rather than fail, which is what this fallback exercises")
+else:
+    _claims = _CONV.lookup("initial jobless claims against JOLTS layoffs and discharges")
+    check(_claims["matched"] >= 3, "a subject the desk charts returns a convention",
+          f"{_claims['matched']} prior charts")
+    _tf = {t["value"] for t in _claims["transformations"]}
+    check("4wma" in _tf, "and it recovers the convention we can verify by eye",
+          "every claims chart in the catalogue is a 4-week moving average, which is "
+          "exactly the tacit knowledge no ticker store can hold")
+
+    # The anti-menu property, and the reason it is a test rather than a comment: the
+    # payload must offer NO way to name a stored chart. If a path or filename ever leaks
+    # in, "reuse that one" becomes expressible and the tool quietly turns into the menu
+    # it was designed not to be.
+    _blob = json.dumps(_claims).lower()
+    check(".png" not in _blob and "path" not in _blob and "file" not in _blob,
+          "but returns no chart identifier of any kind",
+          "with nothing to name, force-fitting a prior chart cannot be expressed")
+
+    _novel = _CONV.lookup("quantum entanglement of cryptocurrency sentiment")
+    check(_novel["matched"] == 0, "a novel pairing returns silence",
+          "the property that keeps this from inventing a convention for anything asked")
+    check("ordinary outcome" in _novel["note"],
+          "and says so as a normal outcome rather than a failure",
+          "a tool that reports emptiness as a miss teaches the model to force a match")
+
+    _thin = _CONV.lookup("penguin migration patterns in the antarctic")
+    check(_thin["matched"] == 0, "one lookalike chart is not a convention",
+          "three is the floor; a single coincidental match dressed as a house rule is "
+          "worse than saying nothing")
+    check(_claims["index_generated"][:2] == "20",
+          "every answer carries the catalogue's date",
+          "it is a snapshot nothing updates, so staleness has to be visible")
+
 n_bad = sum(1 for ok, _, _ in _RESULTS if not ok)
 print("\n" + "=" * 78)
 print(f"{len(_RESULTS) - n_bad}/{len(_RESULTS)} checks passed"
