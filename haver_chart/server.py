@@ -362,6 +362,8 @@ def render_chart(
     right_min: float | None = None,
     right_max: float | None = None,
     x_tick_years: int | None = None,
+    left_tick_step: float | None = None,
+    right_tick_step: float | None = None,
     x_label_fmt: str = "",
     end_series: str = "",
     x_pad_periods: int | None = None,
@@ -422,6 +424,7 @@ def render_chart(
             axis_mode=axis_mode, recession_shading=recession_shading,
             left_min=left_min, left_max=left_max, right_min=right_min,
             right_max=right_max, x_tick_years=x_tick_years,
+            left_tick_step=left_tick_step, right_tick_step=right_tick_step,
             x_label_fmt=x_label_fmt, end_series=end_series,
             x_pad_periods=x_pad_periods)
     except Exception as exc:

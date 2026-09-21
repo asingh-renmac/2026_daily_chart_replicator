@@ -965,6 +965,8 @@ def render_row(row: dict, save_path: str) -> dict:
         axis_mode="dual" if axis_mode == "dual" else "shared",
         recession=rec, x_range=(x_start, x_end), y_left=y_left, y_right=y_right,
         x_tick_years=cs.get("x_tick_years"), x_label_fmt=cs.get("x_label_fmt"),
+        left_tick_step=cs.get("left_tick_step"),
+        right_tick_step=cs.get("right_tick_step"),
         auto_axis=bool(cs.get("auto_axis")))
     Path(save_path).parent.mkdir(parents=True, exist_ok=True)
     _, info = render(plotted, spec, save_path=save_path)

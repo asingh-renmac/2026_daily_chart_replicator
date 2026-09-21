@@ -487,6 +487,89 @@ class PlotSeries:
     sa: bool = False
 
 
+def _compatible_steps(span: float, step: float, how_many: int = 3) -> list:
+    """Steps that DO divide `span` a whole number of times, nearest `step` first.
+
+    The error this feeds is the only thing standing between the operator and a chart that
+    silently ignored them, so it has to end somewhere actionable rather than at "no".
+    """
+    n = span / step
+    out = set()
+    for k in range(max(1, int(n) - 3), int(n) + 5):
+        out.add(round(span / k, 10))
+    return sorted(out, key=lambda s: abs(s - step))[:how_many]
+
+
+def _tick_positions(lo: float, hi: float, step: float, side: str) -> list:
+    """Ticks at multiples of `step` inside [lo, hi], anchored at zero when zero is inside.
+
+    Pinned bounds are HARD and the step is subordinate to them. That ordering is the whole
+    design: a pinned range exists to match a source chart, so widening it to accommodate a
+    step would produce a chart that looks right and is not — the worst failure available
+    here, because nothing about the output says it happened. When the two cannot both be
+    honoured this raises, in the same spirit as `unmappable applied_transform`.
+
+    Anchored at zero when zero is in view because a tick ON zero is what makes a
+    two-signed axis readable; anchored at `lo` otherwise, since there is no natural origin.
+
+    Every comparison carries a tolerance and every tick is rounded, because this arithmetic
+    is done in binary floating point and the headline case proves it: -1.2 to 0.8 is a span
+    of 2.0, and 2.0 / 0.4 is 5.000000000000001, not 5. Testing that exactly would reject
+    the very case this feature was asked for, and generating ticks without rounding prints
+    1.1102230246251565e-16 where the axis should read 0.
+    """
+    if step is None:
+        return []
+    if not isinstance(step, (int, float)) or not math.isfinite(step) or step <= 0:
+        raise ValueError(f"{side}_tick_step must be a positive finite number, got {step!r}")
+
+    span = hi - lo
+    n = span / step
+    n_whole = round(n)
+    if n_whole < 1 or abs(n - n_whole) > 1e-9 * max(1.0, abs(n)):
+        nearest = ", ".join(f"{s:g}" for s in _compatible_steps(span, step))
+        raise ValueError(
+            f"{side} axis spans {span:g} ({lo:g} to {hi:g}), which is not a whole number "
+            f"of {step:g} steps — it comes to {n:.4g}. Nearest steps that do divide it: "
+            f"{nearest}. The bounds are not widened to fit a step: they are pinned to "
+            f"match a source chart, and moving them would give a chart that looks right "
+            f"and is not. Change {side}_tick_step, or change the bounds.")
+
+    anchor = 0.0 if lo <= 0.0 <= hi else lo
+    k_lo = math.ceil((lo - anchor) / step - 1e-9)
+    k_hi = math.floor((hi - anchor) / step + 1e-9)
+    # +0.0 turns a -0.0 produced by the arithmetic into 0.0, which otherwise prints "-0".
+    return [round(anchor + k * step, 10) + 0.0 for k in range(k_lo, k_hi + 1)]
+
+
+def _snap_to_step(lo: float, hi: float, step: float) -> tuple:
+    """Widen an auto-scaled range outward to whole multiples of `step`.
+
+    Only ever called when the caller pinned NO bounds. Widening is safe here precisely
+    because there is nothing to contradict — the range was the renderer's own guess, not a
+    number read off a source chart.
+    """
+    anchor = 0.0 if lo <= 0.0 <= hi else math.floor(lo / step) * step
+    lo2 = anchor + math.floor((lo - anchor) / step + 1e-9) * step
+    hi2 = anchor + math.ceil((hi - anchor) / step - 1e-9) * step
+    if hi2 <= lo2:                      # degenerate data (flat series)
+        hi2 = lo2 + step
+    return round(lo2, 10) + 0.0, round(hi2, 10) + 0.0
+
+
+def _apply_tick_step(ax, step: Optional[float], pinned: bool, side: str) -> None:
+    """Place `side` ticks every `step`. No-op when step is None, which is the default."""
+    if step is None:
+        return
+    lo, hi = ax.get_ylim()
+    if not pinned:
+        lo, hi = _snap_to_step(lo, hi, step)
+        ax.set_ylim(lo, hi)
+    ticks = _tick_positions(lo, hi, step, side)
+    if ticks:
+        ax.set_yticks(ticks)
+
+
 @dataclass
 class RenderSpec:
     title: str
@@ -502,6 +585,12 @@ class RenderSpec:
     y_right: Optional[tuple] = None
     x_tick_years: Optional[int] = None   # force major ticks every N years
     x_label_fmt: Optional[str] = None    # 'auto'|'year'|'month'|'quarter'
+    # Y-tick SPACING, which y_left/y_right cannot express: a pinned -1.2/0.8 matches the
+    # source's range but the renderer still chose 0.25 where the source printed 0.4, so
+    # the axis read differently from the chart being replicated. None keeps matplotlib's
+    # own locator, byte-for-byte as before.
+    left_tick_step: Optional[float] = None
+    right_tick_step: Optional[float] = None
     # Let the renderer choose axis sides and y ranges from the data. Off by
     # default, and it has to stay that way: replication reproduces a source
     # chart's printed axis and must never second-guess it. See _plan_axes.
@@ -614,6 +703,13 @@ def render(series: list[PlotSeries], spec: RenderSpec,
     if spec.axis_mode == "dual" and spec.y_right is not None:
         axR.set_ylim(*(spec.y_right if "y_right" in clipped
                        else _fit_ylim(spec.y_right, r_ext)))
+
+    # After the limits, never before: the step has to be checked against the range that
+    # will actually be drawn, and with `auto_axis` or `_fit_ylim` in play that is not the
+    # range the caller passed in.
+    _apply_tick_step(axL, spec.left_tick_step, spec.y_left is not None, "left")
+    if spec.axis_mode == "dual":
+        _apply_tick_step(axR, spec.right_tick_step, spec.y_right is not None, "right")
 
     renmac_style(axL, title=spec.title, subtitle=spec.subtitle, source=spec.source)
     if not spec.title:

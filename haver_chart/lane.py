@@ -815,7 +815,8 @@ def build_row(series: list[dict], *, title: str = "", subtitle: str = "",
               sample_start: str = "", axis_mode: str = "shared",
               recession_shading: bool = False,
               left_min=None, left_max=None, right_min=None, right_max=None,
-              x_tick_years=None, x_label_fmt: str = "", end_series: str = "",
+              x_tick_years=None, left_tick_step=None, right_tick_step=None,
+              x_label_fmt: str = "", end_series: str = "",
               x_pad_periods=None, auto_axis: bool = False) -> dict:
     """Assemble the `row` dict `build_chart.render_row` expects (§13.4 schema table).
 
@@ -858,6 +859,13 @@ def build_row(series: list[dict], *, title: str = "", subtitle: str = "",
         chart_spec["x_pad_periods"] = x_pad_periods
     if x_tick_years is not None:
         chart_spec["x_tick_years"] = x_tick_years
+    # Set only when given, so a spec built without them is identical to one built before
+    # they existed -- which is what makes "omit both and nothing changes" true by
+    # construction rather than by testing for it.
+    if left_tick_step is not None:
+        chart_spec["left_tick_step"] = left_tick_step
+    if right_tick_step is not None:
+        chart_spec["right_tick_step"] = right_tick_step
     if x_label_fmt:
         chart_spec["x_label_fmt"] = x_label_fmt
 

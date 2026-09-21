@@ -1408,6 +1408,68 @@ else:
           "every answer carries the catalogue's date",
           "it is a snapshot nothing updates, so staleness has to be visible")
 
+print("\n21. Y-axis tick spacing, subordinate to pinned bounds")
+# y_left/y_right pin the RANGE and could never pin the LABELS: a right axis pinned to
+# -1.2/0.8 to match a source chart still came out with ticks at 0.25 where the source
+# printed 0.4, so the replication matched the extent and not the reading.
+import inspect as _inspect                                              # noqa: E402
+from render import RenderSpec as _RS, _snap_to_step, _tick_positions    # noqa: E402
+
+check(_tick_positions(-1.2, 0.8, 0.4, "right") == [-1.2, -0.8, -0.4, 0.0, 0.4, 0.8],
+      "the case this was asked for: -1.2/0.8 step 0.4",
+      "and the values are exact -- 0.4*3 is 1.2000000000000002 before rounding, and "
+      "0.4*0 lands on 1.1e-16, which would print as a tick label")
+check(_tick_positions(20, 70, 10, "left") == [20.0, 30.0, 40.0, 50.0, 60.0, 70.0],
+      "and the simple one: 20/70 step 10")
+try:
+    _tick_positions(-1.0, 0.8, 0.4, "right")
+    check(False, "a span that is not a whole number of steps raises", "it returned")
+except ValueError as _e:
+    _m = str(_e)
+    check(True, "a span that is not a whole number of steps raises")
+    check("1.8" in _m and "0.4" in _m and "4.5" in _m,
+          "naming the span, the step and what it came to", _m[:78])
+    check("0.45" in _m or "0.36" in _m, "and steps that would have worked",
+          "an error that only says no costs a round-trip to find out what to type")
+    check("not widened" in _m,
+          "and states that the bounds will not be moved to fit",
+          "widening a pinned bound gives a chart that matches the source's shape and "
+          "not its numbers -- right-looking and wrong, with nothing saying so")
+check(_tick_positions(0, 1, None, "left") == [],
+      "no step means matplotlib's own locator, untouched",
+      "verified byte-for-byte too: the same fixture renders to an identical pixel hash "
+      "before and after this change")
+check(0.0 in _tick_positions(-1.2, 0.8, 0.4, "r")
+      and _tick_positions(20, 70, 10, "l")[0] == 20.0,
+      "ticks anchor on zero when zero is in view, on min when it is not")
+_lo, _hi = _snap_to_step(-1.07, 0.73, 0.4)
+check(_lo <= -1.07 and _hi >= 0.73 and round((_hi - _lo) / 0.4, 6).is_integer(),
+      "with NO pinned bounds the step widens the range instead of raising",
+      f"(-1.07, 0.73) -> ({_lo}, {_hi}) -- safe here because the range was the "
+      "renderer's own guess, not a number read off a source chart")
+for _bad in (0, -1, float("nan")):
+    try:
+        _tick_positions(0, 1, _bad, "left")
+        check(False, f"step {_bad!r} is rejected")
+    except ValueError:
+        check(True, f"step {_bad!r} is rejected")
+# Drift guard. Four layers carry these values and a gap in any one fails SILENTLY -- the
+# argument simply never arrives and the chart renders with default ticks. Checked by what
+# each layer DOES, not by its signature: lane.render forwards **row_kw, so introspecting
+# it proves nothing (the first version of this check failed for exactly that reason).
+_p = _inspect.signature(server.render_chart).parameters
+check("left_tick_step" in _p and "right_tick_step" in _p,
+      "the tool takes both steps")
+_row = lane.build_row([], left_tick_step=0.4, right_tick_step=0.25)
+_cs = _row["chart_spec"]
+check(_cs.get("left_tick_step") == 0.4 and _cs.get("right_tick_step") == 0.25,
+      "and they reach the chart spec the renderer is built from")
+check("left_tick_step" not in lane.build_row([])["chart_spec"],
+      "while a row built without them carries no such key at all",
+      "which is what makes 'omit both and nothing changes' true by construction")
+check(hasattr(_RS, "left_tick_step") and hasattr(_RS, "right_tick_step"),
+      "and RenderSpec has somewhere to put them")
+
 n_bad = sum(1 for ok, _, _ in _RESULTS if not ok)
 print("\n" + "=" * 78)
 print(f"{len(_RESULTS) - n_bad}/{len(_RESULTS)} checks passed"
