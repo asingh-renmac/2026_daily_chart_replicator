@@ -923,8 +923,25 @@ if HTTP_ENABLED:
     saved.forEach(function (s) {
       parts.push("\\u201c" + s.description + "\\u201d \\u2192 " + s.code);
     });
+    // "picked", not "picked and saved". The panel no longer saves anything -- it cannot
+    // reliably reach a tool (see saveAll) -- so the model does the storing, and the
+    // instruction to do so has to be explicit and unmissable. A message that merely
+    // announced the picks would leave them in one chat and gone by the next.
+    // Three instructions, and the last two used to be enforced by the panel itself. They
+    // have to travel now, because the code that enforced them was the tools/call that
+    // could not be trusted to arrive:
+    //   * stop on the first refusal. Storing three of five and carrying on builds a chart
+    //     nobody approved, which the panel prevented by halting its own loop.
+    //   * report the key. A bind landing under a key the next lookup misses is the one
+    //     failure that looks exactly like success -- 2026-09-08, when an HTML-escaped
+    //     descriptor made a stored binding unreachable forever -- and the panel used to
+    //     print it for that reason. remember_binding returns it; it just has to be read.
     var what = saved.length
-      ? "I picked and saved: " + parts.join("; ") + "."
+      ? "I picked: " + parts.join("; ") + ". Call remember_binding once for each, "
+        + "exactly as written. It confirms against DLX before storing, so if any is "
+        + "REFUSED, stop there \\u2014 do not store the rest, do not substitute another "
+        + "ticker, and tell me which one and why. Tell me the key each one was stored "
+        + "under, so I can see it matches the description."
       : "I did not pick anything.";
 
     if (refused.length) {
@@ -937,8 +954,11 @@ if HTTP_ENABLED:
     // D16. The panel stays live in scroll-back forever, so a click on an hour-old one
     // would re-run an hour-old request as if it were current. Save it, but do not act.
     if (ageMinutes() > 30) {
-      tell(what + " Do NOT re-run anything from this old panel \\u2014 the bindings are " +
-           "stored and I will ask again if I still want them.");
+      // Store, but do not re-run. Storing is still right on an old panel -- the pick was
+      // a real decision and is worth keeping -- whereas re-running an hour-old request
+      // as if it were current is not.
+      tell(what + " Store them, but do NOT re-run anything from this old panel \\u2014 " +
+           "I will ask again if I still want it.");
       note(document.getElementById("msg").textContent +
            "\\nThis panel is over 30 minutes old, so the request was not re-run. " +
            "Ask again in chat and it will bind without asking.", "ok");
@@ -954,7 +974,7 @@ if HTTP_ENABLED:
       // Points at the request rather than quoting it back. The verbatim quote was there
       // to stop a bare "continue" leaving the model to guess what it was continuing, but
       // the request is a few lines up its own context either way, and re-pasting a long
-      // one buried the part that matters -- the bindings just saved -- under a wall of
+      // one buried the part that matters -- the bindings just picked -- under a wall of
       // repeated text the operator had to read past (Aman 2026-09-13). Still guarded by
       // `original_request` being present at all, which is what separates "the panel knows
       // which request it came from" from "it does not".
@@ -973,87 +993,46 @@ if HTTP_ENABLED:
   }
 
   function saveAll() {
-    // Sequential, deliberately. Each remember_binding DLX-confirms before storing, and
-    // DLX will not take concurrent callers -- the same constraint that forces the
-    // enrichment queue.
+    // NO tools/call. The panel collects the choices and hands them to the chat; the model
+    // calls remember_binding through its OWN session.
+    //
+    // Because the panel's session is not reliably the chat's. 2026-09-22, from the request
+    // log this build added: the chat's session 8a8cd3aa was returning 200s throughout --
+    // three picker enrichments at 39s, 17s and 15s -- and then Save arrived as
+    // `POST /mcp -> 404 session=d18e2f59`, twice, 1ms each. That id appears nowhere else
+    // in the log: the server never issued it. So this was not an expired session or a
+    // restart mid-panel, which is what we assumed for nine days; a `tools/call` relayed by
+    // the host can simply arrive wearing an identity the server has never seen, and no
+    // amount of hardening here reaches that, because the request is rejected before any of
+    // our code runs.
+    //
+    // ui/message is handled by the HOST and never relayed, so it does not depend on that
+    // session at all -- which is precisely why the fallback added on 2026-09-13 kept
+    // working while the save it was rescuing could not. Using the reliable path for the
+    // save itself makes the failure impossible rather than survivable.
+    //
+    // Nothing is given up on safety. remember_binding still DLX-confirms before it stores,
+    // so a mistyped ticker still cannot poison the store -- the confirmation just happens
+    // one hop later, in the model's turn. What IS given up is the in-panel per-row tick and
+    // DLX's refusal shown against the offending row; the model reports both in chat
+    // instead. A confirmation the operator can see but not rely on was the worse trade.
     var ps = pages(), saved = [], refused = [], i = 0;
 
-    function step() {
-      if (i >= ps.length) {
-        done = true;
-        var lines = saved.map(function (s) {
-          return s.code + "  \\u2190  " + s.description
-               + (s.key ? "\\n    Stored under key: " + s.key : "");
-        });
-        note("Saved " + saved.length + " binding(s)."
-             + (lines.length ? "\\n" + lines.join("\\n") : "")
-             + (refused.length ? "\\n\\nLeft unresolved: " + refused.join("; ") : ""), "ok");
-        handBack(saved, refused);
-        return;
-      }
+    for (i = 0; i < ps.length; i++) {
       var p = ps[i], choice = picks[i];
-      if (choice === null || choice === undefined) {
-        if (choice === null) { refused.push(p.description); }
-        i++; step(); return;
-      }
-      note("Confirming " + choice + " for \\u201c" + p.description + "\\u201d against DLX"
-           + " (" + (i + 1) + " of " + ps.length + ")...");
-      // remember_binding DLX-confirms before it stores, so a typed ticker cannot poison
-      // the store. Its refusal is the useful answer, which is why the error is shown here
-      // rather than swallowed.
-      request("tools/call", {name: "remember_binding",
-                             arguments: {base_descriptor: p.description,
-                                         code_at_db: choice}})
-        .then(function (res) {
-          if (res && res.isError) {
-            var why = "";
-            try { why = res.content.map(function (b) { return b.text || ""; }).join(" "); }
-            catch (e) { why = "DLX would not confirm it."; }
-            // Stop on the FIRST refusal rather than pressing on. Saving three of five and
-            // resuming would build a chart the operator never approved.
-            note("\\u201c" + p.description + "\\u201d: " +
-                 (why || "DLX would not confirm that ticker.") +
-                 "\\nNothing after this one was saved. Fix that row and press Save again.",
-                 "err");
-            page = i; render();
-            document.getElementById("go").disabled = false;
-            return;
-          }
-          // The key is shown because a save landing under a key the next lookup misses is
-          // the one failure mode that looks exactly like success (measured 2026-09-08,
-          // when an HTML-escaped descriptor made a stored binding unreachable forever).
-          var key = "";
-          try { key = (res.structuredContent || {}).key || ""; } catch (e) { key = ""; }
-          saved.push({description: p.description, code: choice, key: key});
-          i++; step();
-        })
-        .catch(function (err) {
-          // A TRANSPORT failure, unlike the isError branch above: the call never reached
-          // a tool. The usual cause is a dead MCP session -- the server answers POST /mcp
-          // with 404 once its in-memory session table no longer holds the id, which every
-          // restart guarantees -- and re-pressing Save cannot help, because the session
-          // stays dead however many times it is asked.
-          //
-          // So the button is no longer the recovery. Choosing five series out of thirty
-          // candidates is the expensive part of this panel and it used to evaporate here,
-          // leaving the operator to do the reading again (2026-09-13, and hchen on
-          // 2026-09-11 before that). ui/message is handled by the HOST rather than relayed
-          // to the server, so it still lands when tools/call does not -- which makes
-          // handing the choices back to the chat the one move that still works.
-          var left = [];
-          for (var j = i; j < ps.length; j++) {
-            if (picks[j]) { left.push(ps[j].description + " = " + picks[j]); }
-          }
-          note("Could not save \\u201c" + p.description + "\\u201d: " + err +
-               "\\n\\nYour choices were NOT lost \\u2014 they have been handed back to the "
-               + "chat, which can store them without this panel.", "err");
-          tell("The picker could not reach the server (" + err + "), so nothing below was "
-               + "saved. Do NOT open the picker again. Call remember_binding once for each "
-               + "of these, then re-run my above request: " + left.join("; "));
-          document.getElementById("go").disabled = false;
-        });
+      // undefined is "not looked at yet"; null is "none of these are right", which is a
+      // decision and has to travel as one so the model does not retry it.
+      if (choice === null) { refused.push(p.description); continue; }
+      if (choice === undefined) { continue; }
+      saved.push({description: p.description, code: choice, key: ""});
     }
-    step();
+    done = true;
+    var lines = saved.map(function (s) { return s.code + "  \\u2190  " + s.description; });
+    note((saved.length ? "Handing " + saved.length + " binding(s) to the chat to store."
+                       : "Nothing picked.")
+         + (lines.length ? "\\n" + lines.join("\\n") : "")
+         + (refused.length ? "\\n\\nLeft unresolved: " + refused.join("; ") : ""), "ok");
+    handBack(saved, refused);
   }
 
   document.getElementById("go").addEventListener("click", function () {
@@ -1174,9 +1153,14 @@ if HTTP_ENABLED:
         Call it only when `resolve_series` actually parked something. A resolved slot has
         nothing to pick, and a panel offering a choice that was already made is noise.
 
-        The operator's Save records every binding itself, through `remember_binding`, so
-        the answers survive to later chats. Do not call `remember_binding` yourself — wait
-        for their selection to come back as a message, then carry on with `render_chart`.
+        Their Save hands you the picks as one message; it does NOT store them. Call
+        `remember_binding` for each pair exactly as given — that is what makes the answers
+        survive to later chats — then carry on with `render_chart`. The panel cannot do the
+        storing itself: its `tools/call` reaches the server under the host's MCP session,
+        and on 2026-09-22 a save arrived under a session id the server had never issued
+        while the chat's own session was answering normally. `ui/message`, which is how the
+        picks reach you, is handled by the host and never relayed, so it does not depend on
+        that session and does not share the failure.
 
         ALWAYS pass `original_request`: the operator's request VERBATIM, as they typed it.
         The panel quotes it back so the work resumes on a click instead of making them
@@ -1204,11 +1188,21 @@ if HTTP_ENABLED:
                        "shown; carry on.")
         else:
             names = ", ".join(repr(p.get("description")) for p in pages)
+            # "Call remember_binding", inverted from "do not call it yourself" on
+            # 2026-09-22. The panel used to save through its own tools/call and that turned
+            # out to be the one unreliable path -- a save arrived under a session the server
+            # had never issued while the chat's own session was answering 200s -- so the
+            # panel now hands the picks over and the storing is the model's job. Getting
+            # this wording wrong loses the bindings silently: the operator sees their picks
+            # echoed in chat and assumes they are kept.
             summary = (f"Showing one picker panel with {len(pages)} tab(s): {names}. "
-                       f"WAIT for the operator to work through the tabs and press Save — "
-                       f"their selections come back as a single message and are recorded "
-                       f"for you. Do not guess a ticker, do not call remember_binding "
-                       f"yourself, and do not open another picker for these.")
+                       f"WAIT for the operator to work through the tabs and press Save. "
+                       f"Their selections come back as a single message listing "
+                       f"description → ticker pairs, and they are NOT yet stored: call "
+                       f"remember_binding once for each pair, exactly as given. It "
+                       f"confirms against DLX before storing, so report a refusal rather "
+                       f"than substituting another ticker. Do not guess a ticker, and do "
+                       f"not open another picker for these.")
         # Text mirrors the instruction for the same reason as `_result_text` (G20a): a
         # client that forwards only `content` would otherwise leave the model with a panel
         # it cannot see and no idea that waiting is the correct behaviour.

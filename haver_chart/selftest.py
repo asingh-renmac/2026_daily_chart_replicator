@@ -732,7 +732,7 @@ else:
     # D16: the panel stays live in scroll-back forever.
     check("issued" in _html and "30" in _html,
           "an old panel saves the bind but refuses to re-run it (D16)")
-    check("Do NOT re-run anything from this old panel" in _html,
+    check("do NOT re-run anything from this old panel" in _html,
           "and says so to the model explicitly")
     # The loop guard. A save landing under a key the next lookup misses would otherwise
     # park again, re-open the panel, and repeat forever.
@@ -827,7 +827,10 @@ else:
           "a per-tab 'none of these' is distinct from an undecided tab")
     check("allDecided" in _html,
           "Save stays disabled until EVERY tab is decided")
-    check("Nothing after this one was saved" in _html,
+    # Since 2026-09-22 this is an INSTRUCTION rather than a loop that halts. The panel no
+    # longer sees the refusal, because it no longer makes the call -- so the rule it used
+    # to enforce has to be carried to whoever does.
+    check("stop there" in _html and "do not store the rest" in _html,
           "a refused binding stops the save instead of pressing on",
           "saving three of five and resuming builds a chart nobody approved")
 
@@ -841,7 +844,9 @@ else:
     _skip = _html.split('getElementById("skip").addEventListener')[-1].split("});")[0]
     check("remember_binding" not in _skip,
           "and the none-of-these path never calls remember_binding")
-    check("key" in _html and "Stored under key" in _html,
+    # Also an instruction now, and for the same reason. remember_binding still returns the
+    # key; the panel just is not the one receiving it any more.
+    check("Tell me the key each one was stored" in _html,
           "the panel shows which key the bind landed under",
           "a save under an unreachable key is the one failure that looks like success")
 
@@ -1469,6 +1474,40 @@ check("left_tick_step" not in lane.build_row([])["chart_spec"],
       "which is what makes 'omit both and nothing changes' true by construction")
 check(hasattr(_RS, "left_tick_step") and hasattr(_RS, "right_tick_step"),
       "and RenderSpec has somewhere to put them")
+
+print("\n22. The picker does not save through tools/call")
+# 2026-09-22, read off the request log this build's own tracing added: the chat's session
+# 8a8cd3aa was answering 200s -- three picker enrichments at 39s, 17s and 15s -- and then
+# Save arrived as `POST /mcp -> 404 session=d18e2f59`, twice, 1ms apart. That id appears
+# nowhere else: the server never issued it. So for nine days we had the wrong cause. It was
+# never an expired session or a restart mid-panel; a tools/call relayed by the host can
+# arrive wearing an identity the server has never seen, and nothing in the lane can reach
+# that, because the request is refused before any of our code runs. ui/message is handled
+# by the host and never relayed, which is exactly why the 09-13 fallback kept working while
+# the save it rescued could not -- so the save now uses that path too.
+_src = (Path(__file__).resolve().parent / "server.py").read_text(encoding="utf-8")
+_pm = _re.search(r'_PICKER_HTML = """(.*?)"""', _src, _re.S)
+check(bool(_pm), "the picker HTML is findable in source",
+      "read from source, not imported: it lives inside `if HTTP_ENABLED:` and importing "
+      "that way needs the Entra credentials")
+_html = _pm.group(1) if _pm else ""
+_targets = sorted(set(_re.findall(r'name:\s*"(\w+)"', _html)))
+check("remember_binding" not in _targets,
+      "Save no longer calls remember_binding over the wire", f"tools/call targets: {_targets}")
+check("enrich_page" in _targets,
+      "but enrich_page still does, deliberately",
+      "a failed enrich shows an empty tab the operator can retry; a failed save costs the "
+      "reading of thirty candidates, which is why only one of them was moved")
+check("Call remember_binding once for each" in _html,
+      "and the hand-back tells the model to store the pairs",
+      "inverted from 'do not call remember_binding yourself' -- get this wording wrong and "
+      "the bindings vanish silently, because the operator sees their picks echoed in chat "
+      "and reasonably assumes they were kept")
+_visible = "\n".join(l for l in _html.splitlines() if not l.strip().startswith("//"))
+check("picked and saved" not in _visible,
+      "and stops claiming the panel saved anything")
+check("Do not guess a ticker" in _src and "not open another picker" in _src,
+      "while the guards that were already right are untouched")
 
 n_bad = sum(1 for ok, _, _ in _RESULTS if not ok)
 print("\n" + "=" * 78)
