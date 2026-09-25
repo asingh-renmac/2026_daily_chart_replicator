@@ -1509,6 +1509,121 @@ check("picked and saved" not in _visible,
 check("Do not guess a ticker" in _src and "not open another picker" in _src,
       "while the guards that were already right are untouched")
 
+print("\n23. One slow picker page cannot take down the session")
+# 2026-09-25, from the request log: a page for "New 1-Family Houses Sold: South" took 81.4s
+# to enrich. Claude's host cancels a tool call at ~60s, so it did (the request closed at
+# 59.9s); our handler, synchronous DLX work in a thread that no cancel scope can interrupt,
+# finished 21s later and the SDK asserted "Request already responded to". That assertion
+# tore the session down, and the panel's next two pages -- and the chat itself -- met 404s.
+# Three causes, three fixes, each pinned here.
+import tempfile as _tempfile                                            # noqa: E402
+import threading as _threading                                          # noqa: E402
+import time as _time_mod                                                # noqa: E402
+
+import anyio as _anyio                                                  # noqa: E402
+from mcp.shared.session import RequestResponder as _RR                  # noqa: E402
+
+from haver_chart import mcp_patches as _MP                              # noqa: E402
+
+
+class _FakeSess:
+    def __init__(self):
+        self.sent = []
+
+    async def _send_response(self, request_id, response):
+        self.sent.append(response)
+
+
+async def _cancel_then_respond():
+    s = _FakeSess()
+    r = _RR(request_id=1, request_meta=None, request=None, session=s,
+            on_complete=lambda _r: None)
+    r.__enter__()
+    await r.cancel()
+    try:
+        await r.respond("late")
+        return None, s.sent
+    except AssertionError as e:
+        return e, s.sent
+
+_status = _MP.apply()
+check(_status in ("already applied",) or _status.startswith(("applied", "not needed")),
+      "the server installs the SDK guard at import", _status)
+_err, _sent = _anyio.run(_cancel_then_respond)
+check(_err is None and len(_sent) == 1,
+      "a result arriving after the host cancelled is dropped, not asserted",
+      "python-sdk#2416: the assertion escaped into the session's task group and killed "
+      "the session; one response still goes out, the late one is logged and discarded")
+if hasattr(_RR.respond, "__wrapped__"):
+    _patched = _RR.respond
+    _RR.respond = _RR.respond.__wrapped__
+    try:
+        _err0, _ = _anyio.run(_cancel_then_respond)
+    finally:
+        _RR.respond = _patched
+    check(True, "canary: does the installed SDK still carry the race?",
+          "yes -- the guard is doing real work" if isinstance(_err0, AssertionError)
+          else "no -- upstream has fixed it; the guard self-disarms on the next start")
+
+# Duplicate DLX work between the warmer and the operator's own request.
+_orig_path, _orig_hm = lane._meta_cache_path, lane.R.haver_metadata
+_tmp_cache = Path(_tempfile.mkdtemp()) / "metadata_cache.json"
+lane._meta_cache_path = lambda: _tmp_cache
+lane._meta_cache = None
+_calls = []
+
+
+def _slow_meta(code):
+    _calls.append(code)
+    _time_mod.sleep(0.4)
+    return {"descriptor": f"{code} (SA, Thous)"}
+
+lane.R.haver_metadata = _slow_meta
+try:
+    _ths = [_threading.Thread(target=lane.candidate_meta, args=("dup@test",))
+            for _ in range(2)]
+    for _t in _ths:
+        _t.start()
+    for _t in _ths:
+        _t.join()
+    check(_calls.count("dup@test") == 1,
+          "two threads wanting one ticker fetch it from DLX once",
+          "the cache is re-checked after the DLX lock is taken; without that the second "
+          "thread re-fetched, which is how South took 81.4s against the warmer's 51.9s")
+
+    lane._meta_cache = None
+    _tmp_cache.unlink(missing_ok=True)
+    _calls.clear()
+    _pool = {"candidates": [{"code": f"c{k}@t", "descriptor": f"S{k} (SA, Thous)",
+                             "similarity": 0.9} for k in range(10)]}
+    _t0 = _time_mod.perf_counter()
+    _shown, _tg, _nt, _partial = lane._enrich_and_order(
+        _pool, "S", "", 5, deadline=_time_mod.perf_counter() + 1.0)
+    _took = _time_mod.perf_counter() - _t0
+    check(_partial and _took < 2.5,
+          "a page answers at its deadline instead of running past the host's",
+          f"stopped after {_took:.1f}s with {len(_calls)} of 10 fetched; the default "
+          f"budget is {lane._PICKER_BUDGET_S:.0f}s against a host limit of ~60s")
+    check(len(_shown) == 5 and all(r["sa"] == "sa" for r in _shown),
+          "and still shows every row, SA-ordered from the catalogue's descriptor",
+          "'Request timed out' over an empty table was the old outcome")
+finally:
+    lane._meta_cache_path, lane.R.haver_metadata = _orig_path, _orig_hm
+    lane._meta_cache = None
+
+# The panel side: refill a partial page, retry a failed first load.
+_js = _re.search(r"<script>(.*?)</script>", _html, _re.S).group(1) if _html else ""
+check("needs_refill" in _js and "got.partial" in _js,
+      "the panel refills a partial page without blanking it",
+      "a separate flag, because `enriched` is what shows the table")
+check("fail_tries" in _js,
+      "and retries a first load the host gave up on",
+      "the server keeps working after the host stops listening, so a second ask "
+      "usually lands on a warm cache")
+_code_lines = [l for l in _js.splitlines() if not l.strip().startswith("//")]
+check(all(ord(c) < 128 for l in _code_lines for c in l),
+      "and no non-ASCII reached executable script")
+
 n_bad = sum(1 for ok, _, _ in _RESULTS if not ok)
 print("\n" + "=" * 78)
 print(f"{len(_RESULTS) - n_bad}/{len(_RESULTS)} checks passed"

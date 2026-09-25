@@ -401,6 +401,16 @@ def _meta_cache_load() -> dict:
     return _meta_cache
 
 
+def candidate_meta_cached(code: str) -> Optional[dict]:
+    """The cached metadata for `code` if fresh, else None. Never touches DLX."""
+    now = datetime.now(timezone.utc).timestamp()
+    with _META_LOCK:
+        hit = _meta_cache_load().get(code)
+        if hit and (now - float(hit.get("at") or 0)) < _META_TTL_HOURS * 3600:
+            return dict(hit.get("meta") or {})
+    return None
+
+
 def candidate_meta(code: str) -> dict:
     """DLX metadata for one ticker, cached on disk so a restart does not re-pay for it.
 
@@ -415,11 +425,9 @@ def candidate_meta(code: str) -> dict:
     """
     import json
     now = datetime.now(timezone.utc).timestamp()
-    with _META_LOCK:
-        cache = _meta_cache_load()
-        hit = cache.get(code)
-        if hit and (now - float(hit.get("at") or 0)) < _META_TTL_HOURS * 3600:
-            return dict(hit.get("meta") or {})
+    hit = candidate_meta_cached(code)
+    if hit is not None:
+        return hit
 
     # Outside the CACHE lock (holding that across a 1.7s call would serialize readers who
     # only wanted a hit), but inside a DLX lock, which is not optional. Two tabs enriching
@@ -427,6 +435,15 @@ def candidate_meta(code: str) -> dict:
     # hang it on 2026-09-09. The panel serializes its requests too; this is the guarantee
     # that does not depend on the panel behaving.
     with _DLX_META_LOCK:
+        # Check AGAIN now we hold the DLX lock. The miss above was read before waiting, and
+        # whoever held the lock meanwhile -- usually the background warmer on the very page
+        # the operator just opened -- may have fetched this exact ticker. Without the second
+        # look both fetch it: on 2026-09-25 the foreground South page redid the warmer's
+        # work and took 81.4s against the warmer's 51.9s, which is what pushed it past the
+        # host's 60s limit.
+        hit = candidate_meta_cached(code)
+        if hit is not None:
+            return hit
         with quiet_stdout():
             meta = R.haver_metadata(code) or {}
 
@@ -473,6 +490,11 @@ def _resolve_pool(base_descriptor: str, applied_transform: str, formula: str,
     # Under the DLX lock: the catalogue search reaches Haver too, and with a background
     # warmer running there is now a second thread that could be inside it.
     with _DLX_META_LOCK:
+        # Re-checked under the lock for the same reason as candidate_meta: the thread that
+        # held it while we waited was probably the warmer, resolving this same page.
+        hit = _RESOLVE_MEMO.get(key)
+        if hit is not None:
+            return hit
         out = resolve_one(base_descriptor, applied_transform, formula, sa_hint, freq_hint,
                           candidate_n=pool_n)
     if len(_RESOLVE_MEMO) >= _RESOLVE_MEMO_MAX:
@@ -481,18 +503,45 @@ def _resolve_pool(base_descriptor: str, applied_transform: str, formula: str,
     return out
 
 
+# How long a picker call may spend before it answers with what it has. Claude's host
+# cancels a tool call at about 60s (measured 2026-09-25: the cancelled request closed at
+# 59.9s), and a page answered in 40s with some rows still missing their dates is worth far
+# more than a complete page that arrives after the host stopped listening -- which is what
+# "Request timed out" and an empty table were. Measured from the START of the call, so time
+# spent resolving counts against it. The rows left short are refilled by the panel asking
+# again, and by then the warmer or the late DLX calls have usually cached them.
+_PICKER_BUDGET_S = float(os.environ.get("HAVER_CHART_PICKER_BUDGET_S", "40"))
+
+
 def _enrich_and_order(out: dict, base_descriptor: str, sa_hint: str,
-                      candidate_n: int) -> tuple:
+                      candidate_n: int, deadline: Optional[float] = None,
+                      foreground: bool = True) -> tuple:
     """The slow half: one DLX call per candidate, then SA-first ordering.
 
     Split out from `pick_series` so a batched panel can run it for the page being LOOKED
     at and skip the rest. Five descriptors enriched up front is 101s in a single tool
     call, which is worse than the five separate panels it replaces.
+
+    Returns (shown, target, note, partial). `partial` is True when the deadline passed
+    before every candidate's DLX metadata was in hand; those rows carry the catalogue's
+    own descriptor and no dates, and the panel asks again to fill them in.
     """
     rows = []
+    partial = False
     for cand in out.get("candidates") or []:
         code = cand.get("code") or ""
-        meta = candidate_meta(code)
+        if not foreground:
+            # The warmer used to yield only BEFORE starting a series, so once it was inside
+            # one it kept taking the DLX lock turn about with the operator's own request.
+            # Checking between candidates lets the page somebody is waiting on go first.
+            while _fg_busy():
+                time.sleep(0.25)
+        if deadline is not None and time.perf_counter() >= deadline:
+            meta = candidate_meta_cached(code)
+            if meta is None:
+                meta, partial = {}, True
+        else:
+            meta = candidate_meta(code)
         descriptor = str(meta.get("descriptor") or cand.get("descriptor") or "")
         tag = R._sa_of_descriptor(descriptor)
         rows.append({
@@ -527,7 +576,7 @@ def _enrich_and_order(out: dict, base_descriptor: str, sa_hint: str,
     elif rows:
         note = (f"no candidate's descriptor says {target.upper()} — showing what exists, "
                 f"which is how a series with no {target.upper()} copy looks")
-    return shown, target, note
+    return shown, target, note, partial
 
 
 # ───────────────────── warming the pages behind the first one ───────────────────────
@@ -601,12 +650,17 @@ def enrich_page(base_descriptor: str, applied_transform: str = "", formula: str 
     base_descriptor = _clean_descriptor(base_descriptor)
     pool_n = max(candidate_n * 3, 12)
     t0 = time.perf_counter()
+    # The warmer has no host waiting on it, so it gets no deadline: its whole job is to
+    # finish the DLX work the foreground skipped.
+    deadline = (t0 + _PICKER_BUDGET_S) if _foreground else None
     if _foreground:
         _fg_enter()
     try:
         out = _resolve_pool(base_descriptor, applied_transform, formula, sa_hint,
                             freq_hint, pool_n)
-        shown, target, note = _enrich_and_order(out, base_descriptor, sa_hint, candidate_n)
+        shown, target, note, partial = _enrich_and_order(
+            out, base_descriptor, sa_hint, candidate_n,
+            deadline=deadline, foreground=_foreground)
     finally:
         if _foreground:
             _fg_exit()
@@ -615,13 +669,15 @@ def enrich_page(base_descriptor: str, applied_transform: str = "", formula: str 
         # from the logs the first time it was asked. A warm hit and a cold fetch look
         # identical to the operator except in seconds, so the seconds are what to record.
         print(f"[picker] enrich_page {base_descriptor!r} "
-              f"in {time.perf_counter() - t0:.1f}s", file=sys.stderr, flush=True)
+              f"in {time.perf_counter() - t0:.1f}s{' (partial)' if partial else ''}",
+              file=sys.stderr, flush=True)
     return {"description": base_descriptor,
             "sa_target": target,
             "sa_note": note,
             "status": out.get("status"),
             "resolved": out.get("resolved"),
             "reason": out.get("reason") or "",
+            "partial": partial,
             "candidates": shown}
 
 
@@ -642,6 +698,9 @@ def pick_series_pages(descriptors: list, applied_transform: str = "", formula: s
     """
     cleaned = [_clean_descriptor(d) for d in (descriptors or []) if str(d or "").strip()]
     pool_n = max(candidate_n * 3, 12)
+    # The same host limit applies to this call as to enrich_page, and page one is enriched
+    # inside it -- on a slow DLX morning that alone could run past 60s and take the session.
+    deadline = time.perf_counter() + _PICKER_BUDGET_S
 
     pages = []
     for i, desc in enumerate(cleaned):
@@ -662,8 +721,9 @@ def pick_series_pages(descriptors: list, applied_transform: str = "", formula: s
         if i == 0:
             out = _resolve_pool(desc, applied_transform, formula, sa_hint, freq_hint,
                                 pool_n)
-            shown, target, note = _enrich_and_order(out, desc, sa_hint, candidate_n)
-            page.update({"enriched": True, "candidates": shown,
+            shown, target, note, partial = _enrich_and_order(out, desc, sa_hint,
+                                                             candidate_n, deadline=deadline)
+            page.update({"enriched": True, "partial": partial, "candidates": shown,
                          "status": out.get("status"), "resolved": out.get("resolved"),
                          "reason": out.get("reason") or "",
                          "candidate_count": len(out.get("candidates") or []),
@@ -731,12 +791,15 @@ def pick_series(base_descriptor: str, applied_transform: str = "", formula: str 
     # only place SA status lives (Haver.metadata has no SA field — it is the descriptor's
     # units parenthetical), so the pool has to be fetched before it can be ordered.
     pool_n = max(candidate_n * 3, 12)
+    deadline = time.perf_counter() + _PICKER_BUDGET_S
     out = _resolve_pool(base_descriptor, applied_transform, formula, sa_hint, freq_hint,
                         pool_n)
-    shown, target, note = _enrich_and_order(out, base_descriptor, sa_hint, candidate_n)
+    shown, target, note, partial = _enrich_and_order(out, base_descriptor, sa_hint,
+                                                     candidate_n, deadline=deadline)
     return {"description": base_descriptor,
             "sa_target": target,
             "sa_note": note,
+            "partial": partial,
             "status": out.get("status"),
             "resolved": out.get("resolved"),
             "reason": out.get("reason") or "",

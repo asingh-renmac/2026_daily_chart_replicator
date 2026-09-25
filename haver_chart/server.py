@@ -35,6 +35,12 @@ if str(_REPO_ROOT) not in sys.path:
 # dependency that subtle should not rest on the import graph staying as it is today.
 from haver_chart import bootstrap                 # noqa: E402,F401
 
+# Before any session exists. Without it, a tool call the host cancels at its ~60s timeout
+# tears down the WHOLE session when our handler finishes late -- one slow picker page on
+# 2026-09-25 took the rest of the panel and the chat's connection with it. See the module.
+from haver_chart import mcp_patches as _mcp_patches  # noqa: E402
+print(f"[haver-chart] mcp guard: {_mcp_patches.apply()}", file=sys.stderr, flush=True)
+
 from fastmcp import FastMCP                       # noqa: E402
 from fastmcp.exceptions import ToolError          # noqa: E402
 from fastmcp.tools.tool import ToolResult         # noqa: E402
@@ -676,7 +682,8 @@ if HTTP_ENABLED:
       var left = 0, ps = pages();
       for (var k = 0; k < ps.length; k++) { if (!ps[k].enriched) { left++; } }
       document.getElementById("holdwhy").textContent =
-        "Still loading this series. They are fetched one at a time because Haver's DLX "
+        (p.fail_tries ? "The first attempt ran long, so it is being asked again. " : "")
+        + "Still loading this series. They are fetched one at a time because Haver's DLX "
         + "will not answer parallel requests"
         + (left > 1 ? " \\u2014 " + (left - 1) + " other(s) also still loading." : ".");
       document.getElementById("why").textContent = "";
@@ -747,7 +754,10 @@ if HTTP_ENABLED:
     if (enriching || queue.length === 0) { return; }
     var i = queue.shift();
     var p = pages()[i];
-    if (!p || p.enriched) { pump(); return; }
+    // A page is pumped when it has never loaded, OR when it loaded partially and is due a
+    // refill. The refill has its own flag because `enriched` is what shows the table --
+    // flipping it back would blank the rows under an operator who is reading them.
+    if (!p || (p.enriched && !p.needs_refill)) { pump(); return; }
     enriching = true;
     request("tools/call", {name: "enrich_page",
                            arguments: {base_descriptor: p.description,
@@ -755,12 +765,29 @@ if HTTP_ENABLED:
                                        formula: data.formula || ""}})
       .then(function (res) {
         var got = (res && res.structuredContent) || null;
+        p.needs_refill = false;
         if (got) {
+          // Picks are stored by ticker, never by row, so rows re-sorting when late dates
+          // arrive cannot move the operator's selection.
           p.candidates = got.candidates || [];
-          p.sa_note = got.sa_note || "";
           p.sa_target = got.sa_target || "";
           p.reason = got.reason || p.reason;
           p.enriched = true;
+          // PARTIAL: the server answered inside the host's time limit with some rows still
+          // missing their DLX dates (2026-09-25: a full page took 81s, the host gives 60s,
+          // and the operator got "Request timed out" over an empty table instead of the
+          // rows that were already known). Ask again shortly to fill them in -- by then the
+          // late DLX calls have usually landed in the cache and the answer is instant.
+          p.sa_note = (got.partial ? "Some start/end dates are still loading and will "
+                                     + "fill in. " : "") + (got.sa_note || "");
+          if (got.partial && (p.refills || 0) < 4) {
+            p.refills = (p.refills || 0) + 1;
+            setTimeout(function () {
+              p.needs_refill = true;
+              if (queue.indexOf(i) < 0) { queue.push(i); }
+              pump();
+            }, 5000);
+          }
         } else {
           p.enriched = true;
           p.reason = "Could not read metadata for this series; showing nothing rather "
@@ -769,6 +796,23 @@ if HTTP_ENABLED:
         }
       })
       .catch(function (err) {
+        if (p.enriched) {
+          // A failed REFILL. Keep the rows already on screen; they are right, only short
+          // of some dates.
+          p.needs_refill = false;
+          return;
+        }
+        // A first load that failed -- usually the host giving up on a slow call. The
+        // server keeps working after that and fills its cache, so asking again a few
+        // seconds later usually answers at once. Twice, then give up and say why.
+        p.fail_tries = (p.fail_tries || 0) + 1;
+        if (p.fail_tries <= 2) {
+          setTimeout(function () {
+            if (queue.indexOf(i) < 0) { queue.push(i); }
+            pump();
+          }, 4000);
+          return;
+        }
         p.enriched = true;
         p.candidates = [];
         p.reason = "Could not read metadata for this series (" + err + ").";
