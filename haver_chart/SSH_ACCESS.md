@@ -54,7 +54,15 @@ PowerShell **as Administrator**:
 Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0
 Start-Service sshd
 Set-Service -Name sshd -StartupType Automatic
+# Restart it if it dies: 5s, then 10s, then 30s; the count resets after a day.
+sc.exe failure sshd reset= 86400 actions= restart/5000/restart/10000/restart/30000
 ```
+
+The last line is not optional. `Automatic` only starts sshd at boot; it does nothing when
+the service dies while the machine is up, and Windows ships it with no recovery actions.
+On 2026-09-27 sshd was terminated at 15:57:28 and stayed down until someone signed in to
+the AVD and started it by hand, cutting off every remote session in the meantime. Check it
+with `sc.exe qfailure sshd`: `FAILURE_ACTIONS` should list three `RESTART` entries.
 
 Make PowerShell the shell SSH hands you, rather than `cmd`:
 
