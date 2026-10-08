@@ -808,16 +808,17 @@ else:
           and "_PREFETCH_LOCK" in _inspect.getsource(lane.warm_pages),
           "exactly ONE warmer thread, guarded",
           "concurrent DLX callers are the documented way to hang it (19.2)")
-    check("_DLX_META_LOCK" in _inspect.getsource(lane._resolve_pool),
-          "the catalogue search holds the DLX lock too",
-          "with a background warmer there are two threads that can be inside Haver")
+    check("_SEARCH_FLIGHTS" in _inspect.getsource(lane._resolve_pool)
+          and "deadline" in str(_inspect.signature(lane._resolve_pool)),
+          "the catalogue search is shared between callers and bounded by their deadline",
+          "a process-wide lock here queued fifteen pickers for 100-250s (2026-10-08)")
     check("_foreground" in str(_inspect.signature(lane.enrich_page)),
           "enrich_page knows whether an operator is waiting on it")
 
     _meta_src = _inspect.getsource(lane.candidate_meta)
-    check("_DLX_META_LOCK" in _meta_src,
-          "and the lane serializes DLX itself, not trusting the panel to do it",
-          "the guarantee must not depend on the caller behaving")
+    check("_META_FLIGHTS" in _meta_src,
+          "and one ticker is fetched once however many callers want it",
+          "DLX itself is kept to one caller by resolve.DLX_LOCK (section 24)")
     check("_meta_cache_path" in _meta_src,
           "candidate metadata is cached on DISK, so a restart does not re-pay 20s")
 
@@ -1608,6 +1609,9 @@ try:
           "and still shows every row, SA-ordered from the catalogue's descriptor",
           "'Request timed out' over an empty table was the old outcome")
 finally:
+    # A fetch the deadline stopped waiting for is still running. Restoring the real
+    # cache path under it would file its fake answer in the REAL metadata cache.
+    lane._META_FLIGHTS.wait_idle(10)
     lane._meta_cache_path, lane.R.haver_metadata = _orig_path, _orig_hm
     lane._meta_cache = None
 
@@ -1699,6 +1703,85 @@ try:
           "the wedge is a pull stuck on DLX's login window, which never returns")
 finally:
     R._HAVER_PROXY, R.DLX_LOCK_TIMEOUT_S = _saved_proxy, _saved_timeout
+
+print("\n25. Several pickers at once: shared work, answers inside the host's limit")
+# 2026-10-08: fifteen simultaneous four-tab pickers took 100-250s per call against the
+# host's 60s. Every catalogue search queued on one process-wide lock, and the 40s budget
+# never counted that wait. Searches now run side by side, identical ones are shared, and
+# a caller waits only until its deadline. A fake 1.5s search stands in for the real one.
+_orig_resolve, _orig_budget = lane.resolve_one, lane._PICKER_BUDGET_S
+_searched = []
+
+
+def _slow_search(base_descriptor, *a, **k):
+    _searched.append(base_descriptor)
+    _time_mod.sleep(1.5)
+    return {"status": "parked", "resolved": None, "reason": "", "candidates": []}
+
+
+lane.resolve_one = _slow_search
+lane._PICKER_BUDGET_S = 0.4
+lane._RESOLVE_MEMO.clear()
+try:
+    _t0 = _time_mod.perf_counter()
+    _got = lane.enrich_page("selftest slow page A")
+    _took = _time_mod.perf_counter() - _t0
+    check(_took < 1.2 and _got["partial"] and not _got["candidates"]
+          and "Still searching" in _got["sa_note"],
+          "a tab whose search outlasts the budget answers at the deadline, partial",
+          f"answered in {_took:.1f}s against a 0.4s budget and a 1.5s search; the panel "
+          f"asks again in 5s")
+
+    _searched.clear()
+    _ths = ([_threading.Thread(target=lane.enrich_page, args=("selftest shared page B",))
+             for _ in range(6)]
+            + [_threading.Thread(target=lane.enrich_page, args=(f"selftest page C{k}",))
+               for k in range(6)])
+    _t0 = _time_mod.perf_counter()
+    for _t in _ths:
+        _t.start()
+    for _t in _ths:
+        _t.join()
+    lane._SEARCH_FLIGHTS.wait_idle(15)
+    _took = _time_mod.perf_counter() - _t0
+    check(_searched.count("selftest shared page B") == 1,
+          "six people opening the same tab share one search",
+          f"searched {_searched.count('selftest shared page B')} time(s)")
+    check(len(_searched) == 7 and _took < 4.0,
+          "and different tabs search side by side, not one after another",
+          f"7 distinct 1.5s searches done in {_took:.1f}s; one at a time they take 10.5s")
+
+    lane._PICKER_BUDGET_S = 5.0
+    _t0 = _time_mod.perf_counter()
+    _again = lane.enrich_page("selftest shared page B")
+    check(_time_mod.perf_counter() - _t0 < 0.5 and "Still searching" not in _again["sa_note"],
+          "the panel's refill finds the finished search at once",
+          "work a caller stopped waiting for still lands in the memo")
+
+    lane._PICKER_BUDGET_S = 0.4
+    _pp = lane.pick_series_pages(["selftest slow page D"])
+    check(_pp["pages"][0]["enriched"] is False,
+          "a first tab still searching is left for the panel to load",
+          "the panel shows its loading bar and joins the search already running")
+    lane._SEARCH_FLIGHTS.wait_idle(15)
+
+    lane._RESOLVE_MEMO.clear()
+    for _k in range(lane._RESOLVE_MEMO_MAX + 50):
+        lane._memo_put(("selftest", _k), {"n": _k})
+    check(len(lane._RESOLVE_MEMO) == lane._RESOLVE_MEMO_MAX
+          and lane._memo_get(("selftest", 0)) is None
+          and lane._memo_get(("selftest", lane._RESOLVE_MEMO_MAX + 49)) is not None,
+          "the search memo drops its oldest entries instead of emptying itself",
+          f"it held {len(lane._RESOLVE_MEMO)}; the old one wiped everything at 64")
+finally:
+    lane._SEARCH_FLIGHTS.wait_idle(15)
+    lane.resolve_one, lane._PICKER_BUDGET_S = _orig_resolve, _orig_budget
+    lane._RESOLVE_MEMO.clear()
+
+_js25 = _re.search(r"<script>(.*?)</script>", _html, _re.S).group(1) if _html else ""
+check("scheduleRefill" in _js25 and "ps[i].partial" in _js25,
+      "a partial first tab is refilled like every other tab",
+      "page one arrives inside pick_series, so its refill never used to fire")
 
 n_bad = sum(1 for ok, _, _ in _RESULTS if not ok)
 print("\n" + "=" * 78)

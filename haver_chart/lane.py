@@ -25,6 +25,7 @@ import threading
 import time
 import traceback
 import uuid
+from collections import OrderedDict
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -348,15 +349,73 @@ def resolve_one(base_descriptor: str, applied_transform: str = "", formula: str 
 # (a) never fetch the same code twice, across restarts, and (b) never fetch a page nobody
 # has opened.
 _META_LOCK = threading.Lock()
-# Guards DLX itself, not the cache. Separate locks on purpose: a cache HIT must never wait
-# behind somebody else's 1.7s DLX call.
-#
-# Held around EVERY Haver touch, catalogue search included, not just metadata. Once a
-# background thread warms pages ahead of the operator there are genuinely two callers, and
-# "six concurrent calls hang DLX" (§19.2) is not a rule that only applies to the calls that
-# were convenient to lock.
-_DLX_META_LOCK = threading.Lock()
 _META_TTL_HOURS = 24.0
+
+
+class _Flights:
+    """At most one computation per key at a time, waited on with a deadline.
+
+    Replaced `_DLX_META_LOCK` on 2026-10-08. That lock did two jobs: keep DLX to one
+    caller, and stop two requests for the same ticker or page from both doing the work.
+    The first job moved down to `resolve.DLX_LOCK`, around every individual Haver call.
+    Keeping a process-wide lock for the second made fifteen pickers queue for each
+    other's catalogue searches, which are Postgres queries that can run side by side; and
+    because a lock wait has no deadline, the 40s budget never saw that time. Calls took
+    100-250s against the host's 60s.
+
+    So: the first caller for a key starts the work on its own thread, later callers for
+    the SAME key join it, and different keys run in parallel. A caller waits only until
+    its deadline. Work it stops waiting for carries on and lands in the cache, which is
+    what the panel's refill then finds.
+    """
+
+    def __init__(self, name: str):
+        self._name = name
+        self._lock = threading.Lock()
+        self._running: dict = {}
+
+    def run(self, key, fn, timeout: Optional[float] = None) -> tuple:
+        """(True, result) if `fn` finished in time, else (False, None). Re-raises its error."""
+        with self._lock:
+            flight = self._running.get(key)
+            if flight is None:
+                flight = {"done": threading.Event(), "value": None, "error": None}
+                self._running[key] = flight
+                threading.Thread(target=self._work, args=(key, flight, fn), daemon=True,
+                                 name=f"{self._name}-flight").start()
+        if not flight["done"].wait(None if timeout is None else max(0.0, timeout)):
+            return False, None
+        if flight["error"] is not None:
+            raise flight["error"]
+        return True, flight["value"]
+
+    def _work(self, key, flight, fn) -> None:
+        try:
+            flight["value"] = fn()
+        except BaseException as exc:
+            flight["error"] = exc
+        finally:
+            flight["done"].set()
+            with self._lock:
+                self._running.pop(key, None)
+
+    def wait_idle(self, timeout: float = 10.0) -> bool:
+        """True once nothing is running. For tests that must not leave work behind them."""
+        end = time.monotonic() + timeout
+        while time.monotonic() < end:
+            with self._lock:
+                if not self._running:
+                    return True
+            time.sleep(0.02)
+        return False
+
+
+_META_FLIGHTS = _Flights("meta")
+_SEARCH_FLIGHTS = _Flights("search")
+
+
+def _remaining(deadline: Optional[float]) -> Optional[float]:
+    return None if deadline is None else deadline - time.perf_counter()
 
 # Foreground = an operator is watching a spinner. The background warmer yields to it, so
 # prefetching can never make the thing being waited on slower. A counter rather than a
@@ -411,7 +470,7 @@ def candidate_meta_cached(code: str) -> Optional[dict]:
     return None
 
 
-def candidate_meta(code: str) -> dict:
+def candidate_meta(code: str, deadline: Optional[float] = None) -> Optional[dict]:
     """DLX metadata for one ticker, cached on disk so a restart does not re-pay for it.
 
     The in-process cache the old code relied on meant every server restart -- nightly, or
@@ -422,85 +481,110 @@ def candidate_meta(code: str) -> dict:
     discontinued series announces itself. Staleness of a day cannot hide a discontinuation
     (those are measured in years) but does keep a genuinely current series from looking
     stalled after a long weekend.
+
+    Returns None only when `deadline` passes first. The fetch carries on regardless and
+    caches its answer, so whoever asks next gets it.
     """
-    import json
-    now = datetime.now(timezone.utc).timestamp()
     hit = candidate_meta_cached(code)
     if hit is not None:
         return hit
 
-    # Outside the CACHE lock (holding that across a 1.7s call would serialize readers who
-    # only wanted a hit), but inside a DLX lock, which is not optional. Two tabs enriching
-    # at once means two threads in DLX, and that is precisely the combination measured to
-    # hang it on 2026-09-09. The panel serializes its requests too; this is the guarantee
-    # that does not depend on the panel behaving.
-    with _DLX_META_LOCK:
-        # Check AGAIN now we hold the DLX lock. The miss above was read before waiting, and
-        # whoever held the lock meanwhile -- usually the background warmer on the very page
-        # the operator just opened -- may have fetched this exact ticker. Without the second
-        # look both fetch it: on 2026-09-25 the foreground South page redid the warmer's
-        # work and took 81.4s against the warmer's 51.9s, which is what pushed it past the
-        # host's 60s limit.
+    def fetch() -> dict:
+        import json
+        # Check AGAIN inside the flight. The miss above was read before the flight
+        # started, and the flight that just finished -- usually the background warmer on
+        # the very page the operator opened -- may have fetched this exact ticker. Without
+        # the second look both fetch it: on 2026-09-25 the foreground South page redid the
+        # warmer's work and took 81.4s against the warmer's 51.9s, which is what pushed it
+        # past the host's 60s limit. DLX itself is safe either way: every Haver call waits
+        # on resolve.DLX_LOCK.
         hit = candidate_meta_cached(code)
         if hit is not None:
             return hit
+        now = datetime.now(timezone.utc).timestamp()
         with quiet_stdout():
             meta = R.haver_metadata(code) or {}
+        with _META_LOCK:
+            cache = _meta_cache_load()
+            cache[code] = {"at": now, "meta": meta}
+            try:
+                tmp = _meta_cache_path().with_suffix(".json.tmp")
+                # `default=str` is not defensive padding: DLX returns `datetimemod` as a
+                # real datetime, so a plain dumps raises TypeError on EVERY record. The
+                # first version of this swallowed that and reported a working cache that
+                # had never written a byte -- the probe said `entries=0` twice and the 20s
+                # wait never moved.
+                tmp.write_text(json.dumps(cache, default=str), encoding="utf-8")
+                tmp.replace(_meta_cache_path())
+            except Exception as exc:
+                # An unwritable cache is slow, not broken, so this must not raise. But it
+                # must not be silent either: a cache that quietly never writes is
+                # indistinguishable from no cache at all, which is exactly how the bug
+                # above survived a measurement designed to catch it. Once per process is
+                # enough to be findable in the lane log without flooding it.
+                global _meta_warned
+                if not _meta_warned:
+                    _meta_warned = True
+                    print(f"[haver-chart] metadata cache is not writable, every panel "
+                          f"will pay the cold DLX cost: {type(exc).__name__}: {exc}",
+                          file=sys.stderr)
+        return dict(meta)
 
-    with _META_LOCK:
-        cache = _meta_cache_load()
-        cache[code] = {"at": now, "meta": meta}
-        try:
-            tmp = _meta_cache_path().with_suffix(".json.tmp")
-            # `default=str` is not defensive padding: DLX returns `datetimemod` as a real
-            # datetime, so a plain dumps raises TypeError on EVERY record. The first
-            # version of this swallowed that and reported a working cache that had never
-            # written a byte -- the probe said `entries=0` twice and the 20s wait never
-            # moved.
-            tmp.write_text(json.dumps(cache, default=str), encoding="utf-8")
-            tmp.replace(_meta_cache_path())
-        except Exception as exc:
-            # An unwritable cache is slow, not broken, so this must not raise. But it must
-            # not be silent either: a cache that quietly never writes is indistinguishable
-            # from no cache at all, which is exactly how the bug above survived a
-            # measurement designed to catch it. Once per process is enough to be findable
-            # in the lane log without flooding it.
-            global _meta_warned
-            if not _meta_warned:
-                _meta_warned = True
-                print(f"[haver-chart] metadata cache is not writable, every panel will "
-                      f"pay the cold DLX cost: {type(exc).__name__}: {exc}",
-                      file=sys.stderr)
-    return dict(meta)
+    done, meta = _META_FLIGHTS.run(code, fetch, _remaining(deadline))
+    return dict(meta) if done else None
 
 
 # resolve_one is the OTHER 4s of a page. Memoized per process so `enrich_page` does not
 # repeat the search the batch call already did -- without this, opening a tab pays for the
-# catalog lookup a second time.
-_RESOLVE_MEMO: dict = {}
-_RESOLVE_MEMO_MAX = 64
+# catalog lookup a second time. Least-recently-used eviction: the old version emptied the
+# whole memo at 64 entries, so a busy morning threw away every search just as it started
+# paying off (2026-10-08: a repeat of fifteen four-tab panels redid most of its searches).
+_RESOLVE_MEMO: "OrderedDict" = OrderedDict()
+_RESOLVE_MEMO_MAX = 1024
+_MEMO_LOCK = threading.Lock()
+
+
+def _memo_get(key):
+    with _MEMO_LOCK:
+        hit = _RESOLVE_MEMO.get(key)
+        if hit is not None:
+            _RESOLVE_MEMO.move_to_end(key)
+        return hit
+
+
+def _memo_put(key, out: dict) -> None:
+    with _MEMO_LOCK:
+        _RESOLVE_MEMO[key] = out
+        _RESOLVE_MEMO.move_to_end(key)
+        while len(_RESOLVE_MEMO) > _RESOLVE_MEMO_MAX:
+            _RESOLVE_MEMO.popitem(last=False)
 
 
 def _resolve_pool(base_descriptor: str, applied_transform: str, formula: str,
-                  sa_hint: str, freq_hint: str, pool_n: int) -> dict:
+                  sa_hint: str, freq_hint: str, pool_n: int,
+                  deadline: Optional[float] = None) -> Optional[dict]:
+    """The candidate pool for one descriptor, shared by everyone asking for it at once.
+
+    Returns None only when `deadline` passes before the search finishes; the search
+    carries on and lands in the memo for the panel's next ask."""
     key = (base_descriptor, applied_transform, formula, sa_hint, freq_hint, pool_n)
-    hit = _RESOLVE_MEMO.get(key)
+    hit = _memo_get(key)
     if hit is not None:
         return hit
-    # Under the DLX lock: the catalogue search reaches Haver too, and with a background
-    # warmer running there is now a second thread that could be inside it.
-    with _DLX_META_LOCK:
-        # Re-checked under the lock for the same reason as candidate_meta: the thread that
-        # held it while we waited was probably the warmer, resolving this same page.
-        hit = _RESOLVE_MEMO.get(key)
+
+    def search() -> dict:
+        # Re-checked inside the flight for the same reason as candidate_meta: the flight
+        # that just finished was probably the warmer, resolving this same page.
+        hit = _memo_get(key)
         if hit is not None:
             return hit
         out = resolve_one(base_descriptor, applied_transform, formula, sa_hint, freq_hint,
                           candidate_n=pool_n)
-    if len(_RESOLVE_MEMO) >= _RESOLVE_MEMO_MAX:
-        _RESOLVE_MEMO.clear()         # crude, but a picker memo has no business growing
-    _RESOLVE_MEMO[key] = out
-    return out
+        _memo_put(key, out)
+        return out
+
+    done, out = _SEARCH_FLIGHTS.run(key, search, _remaining(deadline))
+    return out if done else None
 
 
 # How long a picker call may spend before it answers with what it has. Claude's host
@@ -538,10 +622,10 @@ def _enrich_and_order(out: dict, base_descriptor: str, sa_hint: str,
                 time.sleep(0.25)
         if deadline is not None and time.perf_counter() >= deadline:
             meta = candidate_meta_cached(code)
-            if meta is None:
-                meta, partial = {}, True
         else:
-            meta = candidate_meta(code)
+            meta = candidate_meta(code, deadline)
+        if meta is None:
+            meta, partial = {}, True
         descriptor = str(meta.get("descriptor") or cand.get("descriptor") or "")
         tag = R._sa_of_descriptor(descriptor)
         rows.append({
@@ -657,10 +741,20 @@ def enrich_page(base_descriptor: str, applied_transform: str = "", formula: str 
         _fg_enter()
     try:
         out = _resolve_pool(base_descriptor, applied_transform, formula, sa_hint,
-                            freq_hint, pool_n)
-        shown, target, note, partial = _enrich_and_order(
-            out, base_descriptor, sa_hint, candidate_n,
-            deadline=deadline, foreground=_foreground)
+                            freq_hint, pool_n, deadline=deadline)
+        if out is None:
+            # The search itself outlasted the budget (a queue of pickers ahead of it).
+            # Answer now, partial and empty, so the panel asks again in 5s and joins the
+            # search still running instead of the host cancelling at 60s. The note rides
+            # in sa_note rather than reason because the panel rebuilds sa_note on every
+            # answer, so the message clears itself once the rows arrive.
+            shown, target, partial = [], "", True
+            note = "Still searching Haver's catalogue for this series."
+            out = {}
+        else:
+            shown, target, note, partial = _enrich_and_order(
+                out, base_descriptor, sa_hint, candidate_n,
+                deadline=deadline, foreground=_foreground)
     finally:
         if _foreground:
             _fg_exit()
@@ -668,13 +762,14 @@ def enrich_page(base_descriptor: str, applied_transform: str = "", formula: str 
         # Timed and logged because "why did series three still spin" could not be answered
         # from the logs the first time it was asked. A warm hit and a cold fetch look
         # identical to the operator except in seconds, so the seconds are what to record.
+        state = (" (still searching)" if not out else " (partial)" if partial else "")
         print(f"[picker] enrich_page {base_descriptor!r} "
-              f"in {time.perf_counter() - t0:.1f}s{' (partial)' if partial else ''}",
+              f"in {time.perf_counter() - t0:.1f}s{state}",
               file=sys.stderr, flush=True)
     return {"description": base_descriptor,
             "sa_target": target,
             "sa_note": note,
-            "status": out.get("status"),
+            "status": out.get("status") or "parked",
             "resolved": out.get("resolved"),
             "reason": out.get("reason") or "",
             "partial": partial,
@@ -720,14 +815,18 @@ def pick_series_pages(descriptors: list, applied_transform: str = "", formula: s
                 "candidates": []}
         if i == 0:
             out = _resolve_pool(desc, applied_transform, formula, sa_hint, freq_hint,
-                                pool_n)
-            shown, target, note, partial = _enrich_and_order(out, desc, sa_hint,
-                                                             candidate_n, deadline=deadline)
-            page.update({"enriched": True, "partial": partial, "candidates": shown,
-                         "status": out.get("status"), "resolved": out.get("resolved"),
-                         "reason": out.get("reason") or "",
-                         "candidate_count": len(out.get("candidates") or []),
-                         "sa_target": target, "sa_note": note})
+                                pool_n, deadline=deadline)
+            # A search still running at the deadline leaves page one unenriched, so the
+            # panel shows its loading bar and fetches the page itself -- joining the
+            # search already under way rather than starting another.
+            if out is not None:
+                shown, target, note, partial = _enrich_and_order(
+                    out, desc, sa_hint, candidate_n, deadline=deadline)
+                page.update({"enriched": True, "partial": partial, "candidates": shown,
+                             "status": out.get("status"), "resolved": out.get("resolved"),
+                             "reason": out.get("reason") or "",
+                             "candidate_count": len(out.get("candidates") or []),
+                             "sa_target": target, "sa_note": note})
         pages.append(page)
 
     # Started AFTER page one is enriched, never before: the warmer and the first page

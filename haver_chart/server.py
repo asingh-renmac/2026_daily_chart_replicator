@@ -780,14 +780,7 @@ if HTTP_ENABLED:
           // late DLX calls have usually landed in the cache and the answer is instant.
           p.sa_note = (got.partial ? "Some start/end dates are still loading and will "
                                      + "fill in. " : "") + (got.sa_note || "");
-          if (got.partial && (p.refills || 0) < 4) {
-            p.refills = (p.refills || 0) + 1;
-            setTimeout(function () {
-              p.needs_refill = true;
-              if (queue.indexOf(i) < 0) { queue.push(i); }
-              pump();
-            }, 5000);
-          }
+          if (got.partial) { scheduleRefill(i); }
         } else {
           p.enriched = true;
           p.reason = "Could not read metadata for this series; showing nothing rather "
@@ -824,6 +817,17 @@ if HTTP_ENABLED:
       });
   }
 
+  function scheduleRefill(i) {
+    var p = pages()[i];
+    if (!p || (p.refills || 0) >= 4) { return; }
+    p.refills = (p.refills || 0) + 1;
+    setTimeout(function () {
+      p.needs_refill = true;
+      if (queue.indexOf(i) < 0) { queue.push(i); }
+      pump();
+    }, 5000);
+  }
+
   function prefetchAll() {
     // EVERY remaining series, queued the moment the first one is on screen -- not one
     // ahead. The earlier version stopped at the first unenriched page and was called
@@ -838,6 +842,10 @@ if HTTP_ENABLED:
     var ps = pages();
     for (var i = 0; i < ps.length; i++) {
       if (!ps[i].enriched) { ensureEnriched(i); }
+      // Page one arrives enriched inside pick_series itself, so the refill that every
+      // other page gets from its own enrich_page answer never fired for it: a partial
+      // first page kept its missing dates for good.
+      else if (ps[i].partial) { scheduleRefill(i); }
     }
   }
 
