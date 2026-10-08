@@ -7,19 +7,27 @@ simulated person. Every session connects first; then all of them fire at the sam
 instant, the worst case of everyone pressing Enter in the same second.
 
 Both servers serialise their Haver work behind one lock (one pull at a time on data, one
-render at a time on chart), so N simultaneous users are expected to QUEUE, not fail. The
-number that matters is how long the last person in the queue waits, because Claude
+Haver call at a time on chart), so N simultaneous users are expected to QUEUE, not fail.
+The number that matters is how long the last person in the queue waits, because Claude
 abandons a tool call after about 60 seconds. Every call over that line is reported as
 one Claude would have given up on.
 
-    python scripts/concurrency_smoke.py                   # full ramp, up to 15 users
+    python scripts/concurrency_smoke.py                   # core suite, up to 15 users
+    python scripts/concurrency_smoke.py --suite picker    # several pickers at once
     python scripts/concurrency_smoke.py --only mixed15
     python scripts/concurrency_smoke.py --max-users 10
 
+The picker suite does what the panel does: `pick_series` opens a four-tab panel (tab one
+enriched, capped at the server's 40s budget), then `enrich_page` for each other tab in
+order, with one refill for any tab that came back partial ("dates still loading"). Each
+user gets a different US state, so the tabs are cold unless a scenario reuses them on
+purpose (`picker15_warm`). It never presses Save.
+
 The first run opens a browser for the Microsoft sign-in, once per server. Tokens are
 kept in ~/.haver_smoke_tokens so a re-run does not ask again; delete that folder to
-sign out. Nothing is written to anyone's chat memory: resolve_series reads the stores
-and render_chart files a PNG under the server's normal 14-day retention.
+sign out. Nothing is written to anyone's chat memory: resolve_series reads the stores,
+render_chart files a PNG under the server's normal 14-day retention, and the picker
+only fills the server's metadata cache.
 """
 
 from __future__ import annotations
@@ -85,15 +93,45 @@ SERIES = [
      "2017=100", "IPMFG@USECON"),
 ]
 
-# name -> (chart users, data users, first SERIES index for chart users)
+# One picker per simulated user: the same four questions about a different state, so
+# every tab is a fresh catalogue search and a fresh set of candidate metadata.
+STATES = [
+    "Alabama", "Alaska", "Arizona", "Arkansas", "California", "Colorado", "Connecticut",
+    "Delaware", "Florida", "Georgia", "Hawaii", "Idaho", "Illinois", "Indiana", "Iowa",
+    "Kansas", "Kentucky", "Louisiana", "Maine", "Maryland", "Massachusetts", "Michigan",
+    "Minnesota", "Mississippi", "Missouri", "Montana", "Nebraska", "Nevada",
+    "New Hampshire", "New Jersey", "New Mexico", "New York", "North Carolina",
+    "North Dakota", "Ohio", "Oklahoma", "Oregon", "Pennsylvania", "Rhode Island",
+    "South Carolina", "South Dakota", "Tennessee", "Texas", "Utah", "Vermont", "Virginia",
+    "Washington", "West Virginia", "Wisconsin", "Wyoming",
+]
+PICKER_TABS = [
+    "Unemployment Rate: {s} (SA, %)",
+    "All Employees: Total Nonfarm: {s} (SA, Thous)",
+    "New Private Housing Units Authorized by Building Permits: {s}",
+    "Average Hourly Earnings: Total Private: {s} (SA, $/Hour)",
+]
+
+# chart/data/picker = users of each kind; *_first = where that kind starts in its list.
 SCENARIOS = {
-    "baseline": (1, 1, 0),
-    "data5":    (0, 5, 0),
-    "chart5":   (5, 0, 1),
-    "data15":   (0, 15, 0),
-    "chart15":  (15, 0, 6),
-    "mixed15":  (8, 7, 21),
+    "baseline":      {"chart": 1, "data": 1, "chart_first": 0},
+    "data5":         {"data": 5},
+    "chart5":        {"chart": 5, "chart_first": 1},
+    "data15":        {"data": 15},
+    "chart15":       {"chart": 15, "chart_first": 6},
+    "mixed15":       {"chart": 8, "data": 7, "chart_first": 21},
+    "picker1":       {"picker": 1, "picker_first": 25},
+    "picker5":       {"picker": 5, "picker_first": 0},
+    "picker15":      {"picker": 15, "picker_first": 5},
+    "picker15_warm": {"picker": 15, "picker_first": 5},
+    "picker_mixed":  {"picker": 5, "chart": 5, "data": 5, "picker_first": 20,
+                      "chart_first": 0},
 }
+SUITES = {
+    "core": ["baseline", "data5", "chart5", "data15", "chart15", "mixed15"],
+    "picker": ["picker1", "picker5", "picker15", "picker15_warm", "picker_mixed"],
+}
+SUITES["all"] = SUITES["core"] + SUITES["picker"]
 
 
 async def sign_in(url: str) -> str:
@@ -109,9 +147,9 @@ async def sign_in(url: str) -> str:
     return oauth.context.current_tokens.access_token
 
 
-async def timed(client: Client, tool: str, args: dict, rec: dict, t0: float):
+async def timed(client: Client, tool: str, args: dict, rec: dict, t0: float, label=""):
     t = time.perf_counter()
-    call = {"tool": tool, "start_s": round(t - t0, 2)}
+    call = {"tool": tool, "label": label, "start_s": round(t - t0, 2)}
     rec["calls"].append(call)
     try:
         res = await client.call_tool(tool, args, raise_on_error=True)
@@ -123,11 +161,81 @@ async def timed(client: Client, tool: str, args: dict, rec: dict, t0: float):
         raise
 
 
-async def one_user(kind: str, i: int, series: tuple[str, str], token: str,
-                   ready: list, go: asyncio.Event, t0box: list) -> dict:
+async def chart_user(c: Client, i: int, series: tuple[str, str], rec: dict, t0: float):
     desc, ticker = series
-    rec = {"kind": kind, "user": i, "series": ticker, "calls": [], "error": None}
-    url = CHART_URL if kind == "chart" else DATA_URL
+    res = await timed(c, "resolve_series", {"base_descriptor": desc}, rec, t0)
+    sc = res.structured_content or {}
+    slot = dict(sc.get("slot") or {})
+    if sc.get("status") != "resolved":
+        # A park is not what this test measures; render the known ticker so the user
+        # still joins the render queue.
+        rec["detail"] = "parked; rendered the known ticker instead"
+        slot = {"resolved": ticker}
+    slot.setdefault("proposed_legend", desc[:70])
+    res = await timed(c, "render_chart",
+                      {"series": [slot], "title": f"Smoke test #{i}", "sample_start": "2015",
+                       "filename": f"smoke_chart_{i}"}, rec, t0)
+    rec.setdefault("detail", f"chart ends {(res.structured_content or {}).get('end')}")
+
+
+async def data_user(c: Client, series: tuple[str, str], rec: dict, t0: float):
+    res = await timed(c, "get_observations",
+                      {"ticker": series[1], "ticker_source": "exact",
+                       "start_date": "2015-01-01"}, rec, t0)
+    sc = res.structured_content or {}
+    rec["detail"] = f"{sc.get('num_obs')} obs to {sc.get('end')}"
+
+
+def _dated(candidates: list) -> int:
+    return sum(1 for r in candidates or [] if r.get("end"))
+
+
+async def picker_user(c: Client, state: str, rec: dict, t0: float):
+    """Open a four-tab panel, then walk the tabs the way the panel does."""
+    tabs = [t.format(s=state) for t in PICKER_TABS]
+    res = await timed(c, "pick_series",
+                      {"descriptors": tabs,
+                       "original_request": f"Chart the {state} labour market and permits"},
+                      rec, t0, label="open")
+    pages = (res.structured_content or {}).get("pages") or []
+    first = pages[0] if pages else {}
+    rec["tabs"] = [{"tab": 1, "partial": bool(first.get("partial")),
+                    "rows": len(first.get("candidates") or []),
+                    "dated": _dated(first.get("candidates")),
+                    "full_at_s": None if first.get("partial") else
+                    round(time.perf_counter() - t0, 2)}]
+    if first.get("partial"):
+        # The panel's refill: same call again, which finds the rows the first one fetched.
+        out = await timed(c, "enrich_page", {"base_descriptor": tabs[0]}, rec, t0,
+                          label="refill 1")
+        sc = out.structured_content or {}
+        rec["tabs"][0].update(refilled=True, still_partial=bool(sc.get("partial")),
+                              dated=_dated(sc.get("candidates")))
+        if not sc.get("partial"):
+            rec["tabs"][0]["full_at_s"] = round(time.perf_counter() - t0, 2)
+    for k, desc in enumerate(tabs[1:], start=2):
+        out = await timed(c, "enrich_page", {"base_descriptor": desc}, rec, t0,
+                          label=f"tab {k}")
+        sc = out.structured_content or {}
+        tab = {"tab": k, "partial": bool(sc.get("partial")),
+               "rows": len(sc.get("candidates") or []), "dated": _dated(sc.get("candidates")),
+               "full_at_s": None if sc.get("partial") else round(time.perf_counter() - t0, 2)}
+        if sc.get("partial"):
+            out = await timed(c, "enrich_page", {"base_descriptor": desc}, rec, t0,
+                              label=f"refill {k}")
+            sc = out.structured_content or {}
+            tab.update(refilled=True, still_partial=bool(sc.get("partial")),
+                       dated=_dated(sc.get("candidates")))
+            if not sc.get("partial"):
+                tab["full_at_s"] = round(time.perf_counter() - t0, 2)
+        rec["tabs"].append(tab)
+
+
+async def one_user(kind: str, i: int, payload, token: str,
+                   ready: list, go: asyncio.Event, t0box: list) -> dict:
+    rec = {"kind": kind, "user": i, "calls": [], "error": None,
+           "series": payload if kind == "picker" else payload[1]}
+    url = DATA_URL if kind == "data" else CHART_URL
     tc = time.perf_counter()
     try:
         async with Client(url, auth=token, timeout=CLIENT_TIMEOUT_S) as c:
@@ -136,27 +244,12 @@ async def one_user(kind: str, i: int, series: tuple[str, str], token: str,
             await go.wait()
             t0 = t0box[0]
             if kind == "data":
-                res = await timed(c, "get_observations",
-                                  {"ticker": ticker, "ticker_source": "exact",
-                                   "start_date": "2015-01-01"}, rec, t0)
-                sc = res.structured_content or {}
-                rec["detail"] = f"{sc.get('num_obs')} obs to {sc.get('end')}"
+                await data_user(c, payload, rec, t0)
+            elif kind == "chart":
+                await chart_user(c, i, payload, rec, t0)
             else:
-                res = await timed(c, "resolve_series", {"base_descriptor": desc}, rec, t0)
-                sc = res.structured_content or {}
-                slot = dict(sc.get("slot") or {})
-                if sc.get("status") != "resolved":
-                    # A park is not what this test measures; render the known ticker so
-                    # the user still joins the render queue.
-                    rec["detail"] = "parked; rendered the known ticker instead"
-                    slot = {"resolved": ticker}
-                slot.setdefault("proposed_legend", desc[:70])
-                res = await timed(c, "render_chart",
-                                  {"series": [slot], "title": f"Smoke test #{i}",
-                                   "sample_start": "2015",
-                                   "filename": f"smoke_{kind}_{i}"}, rec, t0)
-                sc = res.structured_content or {}
-                rec.setdefault("detail", f"chart ends {sc.get('end')}")
+                await picker_user(c, payload, rec, t0)
+            rec["done_s"] = round(time.perf_counter() - t0, 2)
     except Exception as exc:
         rec["error"] = f"{type(exc).__name__}: {exc}"[:300]
         if "connect_s" not in rec:
@@ -166,23 +259,27 @@ async def one_user(kind: str, i: int, series: tuple[str, str], token: str,
 
 
 async def run_scenario(name: str, tokens: dict) -> dict:
-    n_chart, n_data, first = SCENARIOS[name]
-    jobs = ([("chart", k, SERIES[(first + k) % len(SERIES)]) for k in range(n_chart)]
-            + [("data", k, SERIES[k % len(SERIES)]) for k in range(n_data)])
+    sc = SCENARIOS[name]
+    cf, pf = sc.get("chart_first", 0), sc.get("picker_first", 0)
+    jobs = ([("chart", k, SERIES[(cf + k) % len(SERIES)]) for k in range(sc.get("chart", 0))]
+            + [("data", k, SERIES[k % len(SERIES)]) for k in range(sc.get("data", 0))]
+            + [("picker", k, STATES[(pf + k) % len(STATES)])
+               for k in range(sc.get("picker", 0))])
     ready: list = []
     go = asyncio.Event()
     t0box = [0.0]
-    tasks = [asyncio.create_task(one_user(kind, i, s, tokens[kind], ready, go, t0box))
-             for kind, i, s in jobs]
+    tasks = [asyncio.create_task(
+        one_user(kind, i, p, tokens["data" if kind == "data" else "chart"], ready, go, t0box))
+        for kind, i, p in jobs]
     deadline = time.perf_counter() + 90
     while len(ready) < len(jobs) and time.perf_counter() < deadline:
         await asyncio.sleep(0.05)
     t0box[0] = time.perf_counter()
     go.set()
     recs = await asyncio.gather(*tasks)
-    return {"scenario": name, "users": len(jobs), "chart_users": n_chart,
-            "data_users": n_data, "wall_s": round(time.perf_counter() - t0box[0], 1),
-            "records": recs}
+    return {"scenario": name, "users": len(jobs),
+            "mix": {k: sc.get(k, 0) for k in ("chart", "data", "picker") if sc.get(k)},
+            "wall_s": round(time.perf_counter() - t0box[0], 1), "records": recs}
 
 
 def pct(xs: list[float], p: float) -> float:
@@ -190,41 +287,79 @@ def pct(xs: list[float], p: float) -> float:
     return xs[min(len(xs) - 1, int(round(p / 100 * (len(xs) - 1))))]
 
 
+def _spread(xs: list[float]) -> str:
+    if not xs:
+        return ""
+    return (f"fastest {min(xs):5.1f}s  median {statistics.median(xs):5.1f}s  "
+            f"p95 {pct(xs, 95):5.1f}s  slowest {max(xs):5.1f}s")
+
+
+def _call_line(name: str, calls: list) -> str:
+    ok = [c["s"] for c in calls if c.get("ok")]
+    over = sum(1 for c in calls if c.get("s", 0) > HOST_TIMEOUT_S)
+    line = f"   {name:17} ok {len(ok)}/{len(calls)}   {_spread(ok)}"
+    if over:
+        line += f"   ⚠ {over} over {HOST_TIMEOUT_S:.0f}s (Claude would give up)"
+    return line
+
+
 def report(res: dict) -> None:
     recs = res["records"]
-    failed = [r for r in recs if r["error"]]
     conn = [r["connect_s"] for r in recs if "connect_s" in r]
-    print(f"\n── {res['scenario']}: {res['users']} users "
-          f"({res['chart_users']} chart, {res['data_users']} data) ──")
-    print(f"   sessions opened   {len(recs) - sum(1 for r in recs if r['error'] and not r['calls'])}"
-          f"/{len(recs)}   connect p50 {statistics.median(conn):.1f}s  max {max(conn):.1f}s")
+    mix = ", ".join(f"{v} {k}" for k, v in res["mix"].items())
+    print(f"\n── {res['scenario']}: {res['users']} users ({mix}) ──")
+    opened = len(recs) - sum(1 for r in recs if r["error"] and not r["calls"])
+    print(f"   sessions opened   {opened}/{len(recs)}   connect p50 "
+          f"{statistics.median(conn):.1f}s  max {max(conn):.1f}s")
     for tool in ("get_observations", "resolve_series", "render_chart"):
         calls = [c for r in recs for c in r["calls"] if c["tool"] == tool]
-        if not calls:
-            continue
-        ok = [c["s"] for c in calls if c.get("ok")]
-        over = sum(1 for c in calls if c.get("s", 0) > HOST_TIMEOUT_S)
-        line = f"   {tool:17} ok {len(ok)}/{len(calls)}"
-        if ok:
-            line += (f"   fastest {min(ok):5.1f}s  median {statistics.median(ok):5.1f}s  "
-                     f"p95 {pct(ok, 95):5.1f}s  slowest {max(ok):5.1f}s")
-        if over:
-            line += f"   ⚠ {over} over {HOST_TIMEOUT_S:.0f}s (Claude would give up)"
-        print(line)
+        if calls:
+            print(_call_line(tool, calls))
+
+    pickers = [r for r in recs if r["kind"] == "picker"]
+    if pickers:
+        opens = [c for r in pickers for c in r["calls"] if c["label"] == "open"]
+        tabs = [c for r in pickers for c in r["calls"] if c["label"].startswith("tab")]
+        refills = [c for r in pickers for c in r["calls"] if c["label"].startswith("refill")]
+        print(_call_line("picker opens", opens))
+        if tabs:
+            print(_call_line("tabs 2-4", tabs))
+        if refills:
+            print(_call_line("refills", refills))
+        all_tabs = [t for r in pickers for t in r.get("tabs", [])]
+        first_partial = sum(1 for r in pickers if r.get("tabs") and r["tabs"][0]["partial"])
+        partial = sum(1 for t in all_tabs if t["partial"])
+        stuck = sum(1 for t in all_tabs if t.get("still_partial"))
+        rows = sum(t["rows"] for t in all_tabs)
+        dated = sum(t["dated"] for t in all_tabs)
+        print(f"   first tab partial {first_partial}/{len(pickers)} panels   "
+              f"any tab partial {partial}/{len(all_tabs)}   "
+              f"still partial after refill {stuck}")
+        print(f"   rows with dates   {dated}/{rows} once the walk finished")
+        full = [max(t["full_at_s"] for t in r["tabs"]) for r in pickers
+                if len(r.get("tabs", [])) == len(PICKER_TABS)
+                and all(t["full_at_s"] is not None for t in r["tabs"])]
+        never = len(pickers) - len(full)
+        print(f"   all 4 tabs full   {_spread(full) or 'nobody'}"
+              + (f"   ({never} panel(s) never fully loaded)" if never else ""))
+
     print(f"   everyone done in  {res['wall_s']:.1f}s")
-    for r in failed:
-        print(f"   ✗ {r['kind']} user {r['user']} ({r['series']}): {r['error']}")
+    for r in recs:
+        if r["error"]:
+            print(f"   ✗ {r['kind']} user {r['user']} ({r['series']}): {r['error']}")
 
 
 async def main() -> int:
     ap = argparse.ArgumentParser()
+    ap.add_argument("--suite", choices=list(SUITES), default="core")
     ap.add_argument("--only", choices=list(SCENARIOS), action="append")
     ap.add_argument("--max-users", type=int, default=15)
     ap.add_argument("--pause", type=float, default=5.0, help="seconds between scenarios")
     args = ap.parse_args()
 
-    names = [n for n in (args.only or list(SCENARIOS))
-             if sum(SCENARIOS[n][:2]) <= args.max_users]
+    names = [n for n in (args.only or SUITES[args.suite])
+             if sum(v for k, v in SCENARIOS[n].items() if not k.endswith("_first"))
+             <= args.max_users]
     print("signing in (a browser opens the first time, once per server)...", flush=True)
     tokens = {"data": await sign_in(DATA_URL), "chart": await sign_in(CHART_URL)}
     print("signed in to both servers.")
