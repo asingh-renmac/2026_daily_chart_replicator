@@ -1624,6 +1624,82 @@ _code_lines = [l for l in _js.splitlines() if not l.strip().startswith("//")]
 check(all(ord(c) < 128 for l in _code_lines for c in l),
       "and no non-ASCII reached executable script")
 
+print("\n24. Only one thread is ever inside DLX")
+# 2026-10-08: fifteen simultaneous chart users killed the server with heap corruption
+# (0xc0000374, ntdll), the same death as 2026-09-15. resolve_series' confirm called
+# Haver with no lock while render pulls held _RENDER_LOCK and picker metadata held
+# _DLX_META_LOCK, so three threads could be inside DLX at once. A fake Haver that counts
+# how many callers are inside it at the same moment, driven down all three paths.
+
+
+class _InsideCounter:
+    def __init__(self):
+        self.inside = self.peak = self.calls = 0
+        self._g = _threading.Lock()
+
+    def _visit(self):
+        with self._g:
+            self.inside += 1
+            self.calls += 1
+            self.peak = max(self.peak, self.inside)
+        _time_mod.sleep(0.03)
+        with self._g:
+            self.inside -= 1
+
+    def data(self, *a, **k):
+        self._visit()
+        return "FRAME"
+
+    def metadata(self, *a, **k):
+        self._visit()
+        return {}
+
+
+_probe = _InsideCounter()
+_saved_proxy, _saved_timeout = R._HAVER_PROXY, R.DLX_LOCK_TIMEOUT_S
+R._HAVER_PROXY = R._SerializedHaver(_probe)
+try:
+    check(_G4._haver() is R._haver(),
+          "render pulls and resolve confirms share one Haver handle",
+          "two handles meant two locks, which is no lock at all between them")
+    _paths = ([lambda: R._haver().data(["x"], "usecon")] * 6           # resolve confirm
+              + [lambda: _G4._haver().data(["x"], "usecon")] * 6       # render pull
+              + [lambda: R._haver().metadata("x", "usecon")] * 4)      # picker metadata
+    _ths = [_threading.Thread(target=f) for f in _paths]
+    for _t in _ths:
+        _t.start()
+    for _t in _ths:
+        _t.join()
+    check(_probe.calls == len(_paths) and _probe.peak == 1,
+          "16 callers across resolve, render and the picker never overlap inside DLX",
+          f"{_probe.calls} calls, at most {_probe.peak} inside at once")
+
+    R.DLX_LOCK_TIMEOUT_S = 0.2
+    _held = _threading.Event()
+    _release = _threading.Event()
+
+    def _wedged():
+        with R.DLX_LOCK:
+            _held.set()
+            _release.wait(5)
+
+    _w = _threading.Thread(target=_wedged)
+    _w.start()
+    _held.wait(5)
+    _t0 = _time_mod.perf_counter()
+    try:
+        R._haver().data(["x"], "usecon")
+        _msg = ""
+    except RuntimeError as exc:
+        _msg = str(exc)
+    _release.set()
+    _w.join()
+    check("Sign in to DLX" in _msg and _time_mod.perf_counter() - _t0 < 2,
+          "a caller behind a wedged DLX call gets the sign-in explanation, not a hang",
+          "the wedge is a pull stuck on DLX's login window, which never returns")
+finally:
+    R._HAVER_PROXY, R.DLX_LOCK_TIMEOUT_S = _saved_proxy, _saved_timeout
+
 n_bad = sum(1 for ok, _, _ in _RESULTS if not ok)
 print("\n" + "=" * 78)
 print(f"{len(_RESULTS) - n_bad}/{len(_RESULTS)} checks passed"

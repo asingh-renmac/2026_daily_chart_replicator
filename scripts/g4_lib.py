@@ -33,16 +33,13 @@ RAW.mkdir(parents=True, exist_ok=True)
 # Haver pull → period-END SeriesData
 # --------------------------------------------------------------------------- #
 
-_HAVER_READY = False
-
-
 def _haver():
-    global _HAVER_READY
-    import Haver  # noqa: N813
-    if not _HAVER_READY:
-        Haver.direct("on")
-        _HAVER_READY = True
-    return Haver
+    """resolve's Haver handle, so render pulls share its process-wide DLX lock.
+
+    A second handle here is how a render pull and a resolve confirm ended up inside DLX
+    on two threads at once — see resolve.DLX_LOCK."""
+    import resolve
+    return resolve._haver()
 
 
 # Parquet cache TTL. The cache is keyed by code_db_start ONLY — it carries NO

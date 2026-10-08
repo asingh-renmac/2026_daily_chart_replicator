@@ -31,12 +31,56 @@ import json
 import os
 import csv
 import re
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Optional
 
 _TICKER = re.compile(r"^([A-Za-z0-9_]+)@([A-Za-z0-9_]+)$")
-_HAVER_READY = False
+
+# Haver's DLX client is not thread-safe. Two threads inside it corrupt the process heap
+# and kill the server outright (0xc0000374 in ntdll): on 2026-09-15 that looked like
+# bad luck, and on 2026-10-08 fifteen simultaneous chart users reproduced it on demand.
+# The callers' own locks could not prevent it, because there were three of them —
+# _RENDER_LOCK for render pulls, _DLX_META_LOCK for picker metadata, and nothing at all
+# for resolve_series' confirm — and each only queues its own callers. So the guarantee
+# lives here, under all of them: every Haver call in the process goes through `_haver()`,
+# which holds ONE lock for the duration of each call. Re-entrant, so a caller already
+# inside a Haver call cannot deadlock itself.
+DLX_LOCK = threading.RLock()
+#: Same ceiling as the render lock. A pull blocked on DLX's sign-in window never returns,
+#: and without a timeout every later caller would hang behind it silently.
+DLX_LOCK_TIMEOUT_S = float(os.environ.get("HAVER_DLX_LOCK_TIMEOUT_S", "300"))
+_HAVER_PROXY = None
+
+
+def _dlx_acquire() -> None:
+    if not DLX_LOCK.acquire(timeout=DLX_LOCK_TIMEOUT_S):
+        raise RuntimeError(
+            f"another Haver call has held the DLX client for over {DLX_LOCK_TIMEOUT_S:.0f}s "
+            f"and has not returned. The usual cause is an expired Haver DLX sign-in: the "
+            f"call is waiting on a login window that cannot be shown on this host. Sign "
+            f"in to DLX on the server and restart the service.")
+
+
+class _SerializedHaver:
+    """The Haver module, with every function call made under DLX_LOCK."""
+
+    def __init__(self, module):
+        self._module = module
+
+    def __getattr__(self, name):
+        attr = getattr(self._module, name)
+        if not callable(attr):
+            return attr
+
+        def locked(*args, **kwargs):
+            _dlx_acquire()
+            try:
+                return attr(*args, **kwargs)
+            finally:
+                DLX_LOCK.release()
+        return locked
 
 # Slot status strings — kept as literals (not imported from ledger) so resolve.py
 # has no heavy import; they MATCH ledger's RESOLVED/PENDING/SKIPPED values.
@@ -46,12 +90,18 @@ SLOT_SKIPPED = "skipped"
 
 
 def _haver():
-    global _HAVER_READY
-    import Haver  # noqa: N813
-    if not _HAVER_READY:
-        Haver.direct("on")
-        _HAVER_READY = True
-    return Haver
+    """The process's one Haver handle: DLX switched on once, every call serialized."""
+    global _HAVER_PROXY
+    if _HAVER_PROXY is None:
+        _dlx_acquire()
+        try:
+            if _HAVER_PROXY is None:
+                import Haver  # noqa: N813
+                Haver.direct("on")
+                _HAVER_PROXY = _SerializedHaver(Haver)
+        finally:
+            DLX_LOCK.release()
+    return _HAVER_PROXY
 
 
 def confirm_ticker(code_at_db: str, start: str = "2015-01-01") -> bool:
