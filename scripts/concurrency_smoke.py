@@ -258,9 +258,9 @@ async def one_user(kind: str, i: int, payload, token: str,
     return rec
 
 
-async def run_scenario(name: str, tokens: dict) -> dict:
+async def run_scenario(name: str, tokens: dict, state_offset: int = 0) -> dict:
     sc = SCENARIOS[name]
-    cf, pf = sc.get("chart_first", 0), sc.get("picker_first", 0)
+    cf, pf = sc.get("chart_first", 0), sc.get("picker_first", 0) + state_offset
     jobs = ([("chart", k, SERIES[(cf + k) % len(SERIES)]) for k in range(sc.get("chart", 0))]
             + [("data", k, SERIES[k % len(SERIES)]) for k in range(sc.get("data", 0))]
             + [("picker", k, STATES[(pf + k) % len(STATES)])
@@ -355,6 +355,9 @@ async def main() -> int:
     ap.add_argument("--only", choices=list(SCENARIOS), action="append")
     ap.add_argument("--max-users", type=int, default=15)
     ap.add_argument("--pause", type=float, default=5.0, help="seconds between scenarios")
+    ap.add_argument("--state-offset", type=int, default=0,
+                    help="shift every picker onto other states, for a cold re-run: the "
+                         "server caches candidate metadata for 24h")
     args = ap.parse_args()
 
     names = [n for n in (args.only or SUITES[args.suite])
@@ -368,7 +371,8 @@ async def main() -> int:
     for k, name in enumerate(names):
         if k:
             await asyncio.sleep(args.pause)
-        res = await run_scenario(name, tokens)
+        res = await run_scenario(name, tokens, args.state_offset)
+        res["state_offset"] = args.state_offset
         report(res)
         results.append(res)
 
